@@ -101,6 +101,22 @@ per-browser-per-site; if you later deploy this with a backend, the storage layer
 - Positions are grouped ignoring the move-clock, so the same position reached via
   different move orders (or in different games) is counted together.
 
+## Interface
+
+The UI ships with 8 built-in themes — dark: Midnight Club (default), Deep Forest,
+Charcoal Ember, Ocean Night; light: Blush Studio (default), Lavender Studio, Sage
+Morning, Paper & Ink. By default the app follows your system light/dark preference
+(dark → Midnight Club, light → Blush Studio); the sun/moon button in the topbar
+overrides it, and Settings → Appearance lets you reassign which theme "light" and
+"dark" mean, duplicate any theme, and edit your copy with live preview (with an
+inline contrast warning). Custom themes persist and are included in backups.
+
+Layout: desktop gets a position list rail beside a sticky trainer panel; on phones
+tapping a card opens a full-screen trainer with a bottom action bar (browser back
+closes it). The board supports tap-tap and drag. Keyboard: ↑/↓ browse positions,
+B shows the best move, R resets, Esc closes panels. All settings live in the gear
+drawer; analysis controls (player, days, Analyze) stay in the topbar.
+
 ## Architecture
 
 The app is split so the UI can be overhauled without touching (or breaking) the logic:
@@ -110,6 +126,8 @@ The app is split so the UI can be overhauled without touching (or breaking) the 
   persistence. Exposed as `window.CMT` in the browser and via `module.exports` in
   Node. The data model (Settings, UserMove, Position, Play) is documented at the top
   of the file.
+- `themes.js` — theme engine: built-in + custom themes applied as CSS variables,
+  system-preference mode, light/dark assignments, persistence and backup mirror.
 - `app.js` — **thin UI layer.** Reads settings from inputs, renders the list/board/
   detail panels, wires events. Everything it does goes through the `CMT` API.
 - `index.html` / `styles.css` — layout and styling.

@@ -722,12 +722,14 @@
 
   async function buildExport(username, settings, results) {
     const evals = await storage.entries("evals");
+    const themes = await storage.get("sessions", "themes"); // saved by the UI layer
     return {
       formatVersion: EXPORT_FORMAT_VERSION,
       savedAt: new Date().toISOString(),
       username, settings, results,
       evals,
       customBook: customBook.groups,
+      themes: themes || null,
     };
   }
 
@@ -745,6 +747,10 @@
       rebuildCustomSet();
       await saveCustomBook();
       summary.customGroups = data.customBook.length;
+    }
+    if (data.themes && typeof data.themes === "object") {
+      await storage.set("sessions", "themes", data.themes);
+      summary.themes = true; // UI layer re-reads and applies after import
     }
     await storage.set("sessions", "last", {
       savedAt: data.savedAt || new Date().toISOString(),

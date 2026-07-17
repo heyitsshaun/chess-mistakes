@@ -341,6 +341,17 @@ function fakeEngine(cpTable, bestTable) {
     assert.strictEqual(results[1].plays[0].book, undefined, "beyond bookMax → untouched");
   });
 
+  await atest("applyImport passes themes through and reports it", async () => {
+    const data = {
+      results: [],
+      themes: { prefs: { useSystem: true, lightTheme: "blush", darkTheme: "midnight" }, custom: [] },
+    };
+    const { summary } = await CMT.applyImport(data, null);
+    assert.strictEqual(summary.themes, true);
+    const noThemes = await CMT.applyImport({ results: [] }, null);
+    assert.strictEqual(noThemes.summary.themes, undefined);
+  });
+
   test("normalizeResults re-derives keys and drops malformed rows", () => {
     const fen = "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
     const rows = [

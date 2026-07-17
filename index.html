@@ -4,123 +4,163 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Chess Mistake Trainer</title>
+<script>
+/* Pre-paint: re-apply the last active theme's colors before CSS renders,
+   so there's never a flash of the wrong theme. */
+try {
+  var c = JSON.parse(localStorage.getItem("cmt-active-colors"));
+  if (c) for (var k in c) document.documentElement.style.setProperty(k, c[k]);
+} catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-<header>
-  <h1>♟ Chess Mistake Trainer</h1>
-  <p class="tagline">Pull your Chess.com games, find the positions where you keep going wrong, and drill them.</p>
+
+<header class="topbar">
+  <div class="brand">♞ <span>Mistake trainer</span></div>
+  <label class="tb-field">
+    <span>Player</span>
+    <input id="username" type="text" value="your-username" spellcheck="false" autocomplete="off" />
+  </label>
+  <label class="tb-field small">
+    <span>Days</span>
+    <input id="lookback" type="number" value="90" min="1" max="3650" />
+  </label>
+  <button id="run" class="primary">Analyze</button>
+  <button id="stop" class="ghost" disabled>Stop</button>
+  <span class="tb-spacer"></span>
+  <button id="themeToggle" class="iconbtn" title="Toggle light/dark" aria-label="Toggle light or dark mode">☾</button>
+  <button id="openSettings" class="iconbtn" title="Settings" aria-label="Open settings">⚙</button>
 </header>
+<div id="progress" class="progressbar" aria-hidden="true"><span id="barFill"></span></div>
 
-<main>
-  <section class="panel controls">
-    <div class="row">
-      <label>Chess.com username
-        <input id="username" type="text" value="your-username" spellcheck="false" />
-      </label>
-      <label>Lookback (days)
-        <input id="lookback" type="number" value="90" min="1" max="3650" />
-      </label>
-      <label>Max games (0 = unlimited)
-        <input id="maxGames" type="number" value="40" min="0" />
-      </label>
-      <label>Analyze up to move #
-        <input id="maxMove" type="number" value="16" min="1" max="60" />
-      </label>
-      <label>Engine depth
-        <input id="depth" type="number" value="12" min="6" max="20" />
-      </label>
+<main class="workspace">
+  <section class="list-rail" id="listRail">
+    <div class="filters">
+      <select id="sortBy" aria-label="Sort positions">
+        <option value="occ">Most frequent</option>
+        <option value="badshare">Worst rate</option>
+        <option value="cpl">Biggest avg loss</option>
+        <option value="move">Earliest move</option>
+      </select>
+      <label class="chip"><span>skip first</span><input id="hideBefore" type="number" value="0" min="0" max="40" /><span>moves</span></label>
+      <label class="chip check"><input type="checkbox" id="ignoreBook" checked /><span>ignore book</span></label>
+      <label class="chip check"><input type="checkbox" id="showAll" /><span>show all</span></label>
     </div>
-
-    <details class="advanced">
-      <summary>Advanced: mistake thresholds &amp; phases</summary>
-      <p class="hint">A move's quality is graded by how many centipawns (cp) it loses versus the engine's best move. Lower cp loss = better. Positions are flagged when your move is worse than the acceptable grade for that phase of the game.</p>
-      <div class="grid2">
-        <fieldset>
-          <legend>Grade thresholds (max cp loss)</legend>
-          <label>Best ≤ <input id="thBest" type="number" value="10" /></label>
-          <label>Excellent ≤ <input id="thExc" type="number" value="25" /></label>
-          <label>Good ≤ <input id="thGood" type="number" value="50" /></label>
-          <label>Inaccuracy ≤ <input id="thInacc" type="number" value="100" /></label>
-          <label>Mistake ≤ <input id="thMist" type="number" value="200" /></label>
-          <label class="muted">Blunder = anything worse</label>
-        </fieldset>
-        <fieldset>
-          <legend>Game phases &amp; acceptable grade</legend>
-          <label>Opening: moves 1–<input id="phOpenEnd" type="number" value="8" />, accept down to
-            <select id="accOpen"></select>
-          </label>
-          <label>Middlegame: through move <input id="phMidEnd" type="number" value="25" />, accept down to
-            <select id="accMid"></select>
-          </label>
-          <label>Endgame: after, accept down to
-            <select id="accEnd"></select>
-          </label>
-          <label>Check opening book through move <input id="bookMax" type="number" value="12" min="0" max="30" /></label>
-        </fieldset>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="results" class="results">
+      <div class="hero">
+        <div class="hero-board" aria-hidden="true"></div>
+        <h2>Find the moves you keep getting wrong</h2>
+        <p>Pull your games, grade every move with Stockfish, and drill the positions where you go wrong most often.</p>
+        <button id="heroRun" class="primary big">Analyze my games</button>
       </div>
-      <div class="row">
-        <label>Flag if bad ≥ this share of the time
-          <input id="flagShare" type="number" value="0.5" min="0" max="1" step="0.05" />
-        </label>
-        <label>Min times position seen
-          <input id="minOcc" type="number" value="1" min="1" />
-        </label>
-      </div>
-    </details>
-
-    <details class="advanced">
-      <summary>My lines: moves to never flag</summary>
-      <p class="hint">Paste a line in algebraic notation (move numbers optional). Every position→move in it is exempted from flagging — useful for offbeat lines you play on purpose that aren't in any book. You can also ignore individual moves from a position's history table on the right.</p>
-      <div class="row">
-        <input id="lineInput" type="text" class="wide" placeholder="e.g. 1. e4 d5 2. exd5 Qxd5 3. Nc3 Qd8" spellcheck="false" />
-        <button id="addLine">Add line</button>
-      </div>
-      <div id="customList" class="customlist"></div>
-    </details>
-
-    <div class="row actions">
-      <button id="run" class="primary">Fetch &amp; Analyze</button>
-      <button id="stop" disabled>Stop</button>
-      <label class="filebtn">Load PGN file<input id="pgnFile" type="file" accept=".pgn,.txt" hidden multiple /></label>
-      <button id="exportBtn" disabled>Export results</button>
-      <label class="filebtn">Import results<input id="importFile" type="file" accept=".json" hidden /></label>
-      <button id="clearCache" title="Delete saved engine evals and the auto-saved last analysis">Clear saved cache</button>
-    </div>
-
-    <div id="progress" class="progress hidden">
-      <div class="bar"><span id="barFill"></span></div>
-      <div id="status" class="status"></div>
     </div>
   </section>
 
-  <section class="workspace">
-    <div class="panel list">
-      <div class="list-head">
-        <h2>Problem positions</h2>
-        <div class="list-controls">
-          <label class="inline"><input type="checkbox" id="ignoreBook" checked /> ignore book moves</label>
-          <label class="inline">skip first <input id="hideBefore" type="number" value="0" min="0" max="40" class="tiny" /> moves</label>
-          <label class="inline"><input type="checkbox" id="showAll" /> show all analyzed positions</label>
-          <select id="sortBy">
-            <option value="occ">Sort: most frequent</option>
-            <option value="badshare">Sort: worst rate</option>
-            <option value="cpl">Sort: biggest avg loss</option>
-            <option value="move">Sort: earliest move</option>
-          </select>
-        </div>
-      </div>
-      <div id="results" class="results"><p class="empty">No analysis yet. Fill in your details and hit <b>Fetch &amp; Analyze</b>.</p></div>
-    </div>
-
-    <div class="panel detail">
-      <div id="detail" class="detail-body"><p class="empty">Select a position on the left to review and retry it.</p></div>
+  <section class="trainer" id="trainerPanel">
+    <div id="detail" class="detail-body">
+      <p class="empty">Select a position to review and retry it.</p>
     </div>
   </section>
 </main>
 
+<div id="drawerScrim" class="scrim" hidden></div>
+<aside id="drawer" class="drawer" aria-label="Settings" hidden>
+  <div class="drawer-head">
+    <h2>Settings</h2>
+    <button id="closeSettings" class="iconbtn" aria-label="Close settings">✕</button>
+  </div>
+
+  <details open>
+    <summary>Analysis</summary>
+    <div class="set-grid">
+      <label>Max games (0 = unlimited)<input id="maxGames" type="number" value="40" min="0" /></label>
+      <label>Analyze up to move #<input id="maxMove" type="number" value="16" min="1" max="60" /></label>
+      <label>Engine depth<input id="depth" type="number" value="12" min="6" max="20" /></label>
+    </div>
+  </details>
+
+  <details>
+    <summary>Grading &amp; phases</summary>
+    <p class="hint">Moves are graded by centipawns lost versus the engine's best move; lower is better. A position is flagged when your move falls below the acceptable grade for its phase of the game.</p>
+    <div class="set-grid">
+      <label>Best ≤<input id="thBest" type="number" value="10" /></label>
+      <label>Excellent ≤<input id="thExc" type="number" value="25" /></label>
+      <label>Good ≤<input id="thGood" type="number" value="50" /></label>
+      <label>Inaccuracy ≤<input id="thInacc" type="number" value="100" /></label>
+      <label>Mistake ≤<input id="thMist" type="number" value="200" /></label>
+    </div>
+    <div class="set-grid">
+      <label>Opening ends at move<input id="phOpenEnd" type="number" value="8" /></label>
+      <label>Middlegame ends at<input id="phMidEnd" type="number" value="25" /></label>
+      <label>Opening accepts<select id="accOpen"></select></label>
+      <label>Middlegame accepts<select id="accMid"></select></label>
+      <label>Endgame accepts<select id="accEnd"></select></label>
+      <label>Flag if bad ≥ share<input id="flagShare" type="number" value="0.5" min="0" max="1" step="0.05" /></label>
+      <label>Min times seen<input id="minOcc" type="number" value="1" min="1" /></label>
+    </div>
+  </details>
+
+  <details>
+    <summary>Opening book</summary>
+    <p class="hint">Established theory (via the Lichess opening explorer) is exempt from flagging while "ignore book" is on.</p>
+    <div class="set-grid">
+      <label>Check book through move<input id="bookMax" type="number" value="12" min="0" max="30" /></label>
+    </div>
+  </details>
+
+  <details>
+    <summary>My lines: moves to never flag</summary>
+    <p class="hint">Paste a line in algebraic notation (move numbers optional). Every position→move in it is exempt from flagging — for offbeat lines you play on purpose. You can also tap "ignore" on any move in a position's history.</p>
+    <div class="linerow">
+      <input id="lineInput" type="text" placeholder="e.g. 1. e4 d5 2. exd5 Qxd5 3. Nc3 Qd8" spellcheck="false" />
+      <button id="addLine">Add</button>
+    </div>
+    <div id="customList" class="customlist"></div>
+  </details>
+
+  <details>
+    <summary>Appearance</summary>
+    <label class="chip check wide"><input type="checkbox" id="useSystem" checked /><span>Use system light/dark setting</span></label>
+    <div class="set-grid">
+      <label>Light theme<select id="lightTheme"></select></label>
+      <label>Dark theme<select id="darkTheme"></select></label>
+    </div>
+    <div id="themeList" class="themelist"></div>
+    <form id="themeEditor" class="theme-editor" hidden>
+      <div class="set-grid">
+        <label>Name<input id="teName" type="text" /></label>
+        <label>Base<select id="teBase"><option value="dark">dark</option><option value="light">light</option></select></label>
+      </div>
+      <div id="teFields" class="te-fields"></div>
+      <div id="teWarning" class="te-warning" hidden></div>
+      <div class="btnrow">
+        <button type="button" id="teSave" class="primary">Save theme</button>
+        <button type="button" id="teDelete" class="danger">Delete</button>
+        <button type="button" id="teClose">Close editor</button>
+      </div>
+    </form>
+  </details>
+
+  <details>
+    <summary>Data</summary>
+    <div class="btnrow wrap">
+      <label class="filebtn">Load PGN file<input id="pgnFile" type="file" accept=".pgn,.txt" hidden multiple /></label>
+      <button id="exportBtn" disabled>Export backup</button>
+      <label class="filebtn">Import backup<input id="importFile" type="file" accept=".json" hidden /></label>
+      <button id="clearCache">Clear saved cache</button>
+    </div>
+    <p class="hint">Backups include results, the engine eval cache, your custom lines, and themes.</p>
+  </details>
+</aside>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
 <script src="core.js"></script>
+<script src="themes.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
