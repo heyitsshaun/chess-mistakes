@@ -105,7 +105,12 @@ fieldset input[type=number] { width: 64px; }
 .pill.Inaccuracy { color: var(--warn); border-color: var(--warn); }
 .pill.Mistake, .pill.Blunder { color: var(--bad); border-color: var(--bad); }
 .pill.Book { color: var(--accent); border-color: var(--accent); }
+.pill.Ignored { color: var(--muted); border-color: var(--muted); }
 input.tiny { width: 52px; padding: 4px 6px; }
+input.wide { width: min(480px, 100%); }
+.cbrow { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.cbrow .cbl { flex: 1; font-size: 0.85rem; }
+.igbtn { font-size: 0.72rem; padding: 2px 8px; }
 
 /* Board */
 .board-wrap { display: flex; flex-direction: column; gap: 10px; align-items: center; }

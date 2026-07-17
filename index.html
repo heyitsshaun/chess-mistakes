@@ -69,6 +69,16 @@
       </div>
     </details>
 
+    <details class="advanced">
+      <summary>My lines: moves to never flag</summary>
+      <p class="hint">Paste a line in algebraic notation (move numbers optional). Every position→move in it is exempted from flagging — useful for offbeat lines you play on purpose that aren't in any book. You can also ignore individual moves from a position's history table on the right.</p>
+      <div class="row">
+        <input id="lineInput" type="text" class="wide" placeholder="e.g. 1. e4 d5 2. exd5 Qxd5 3. Nc3 Qd8" spellcheck="false" />
+        <button id="addLine">Add line</button>
+      </div>
+      <div id="customList" class="customlist"></div>
+    </details>
+
     <div class="row actions">
       <button id="run" class="primary">Fetch &amp; Analyze</button>
       <button id="stop" disabled>Stop</button>
@@ -110,6 +120,7 @@
 </main>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="core.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

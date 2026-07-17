@@ -56,6 +56,22 @@ A position is flagged when your bad-move share meets the **flag share** (default
 and it's been seen at least **min times** (default 1). Raise *min times* to 2–3 to
 focus only on recurring patterns.
 
+Two kinds of exemptions keep sound-but-engine-disliked moves from being flagged:
+
+- **Opening book** (toggle: *ignore book moves*): moves through move 12 (configurable)
+  are checked against the Lichess opening explorer — established theory (≥1% of master
+  games, or ≥2% of 1600–2200 games when masters data is thin) is never flagged and
+  shows a blue *Book* pill. Lookups are cached permanently.
+- **My lines** (in the controls): your personal repertoire. Paste a line in algebraic
+  notation and every position→move in it is exempted — for offbeat lines you play on
+  purpose that no book contains. You can also click *ignore* next to any move in a
+  position's history table. These always apply, survive reloads and cache clears, and
+  are included in export/import.
+
+The list header also has **skip first N moves**, a view-only filter that hides
+early-move positions without affecting analysis. Thresholds, phases, and toggles all
+apply instantly on change — no re-analysis needed.
+
 ## No games showing up? (CORS)
 
 If the browser can't reach Chess.com (some networks/extensions block it), use
@@ -85,8 +101,29 @@ per-browser-per-site; if you later deploy this with a backend, the storage layer
 - Positions are grouped ignoring the move-clock, so the same position reached via
   different move orders (or in different games) is counted together.
 
-## Files
+## Architecture
 
-- `index.html` — layout and controls
-- `styles.css` — styling
-- `app.js` — fetching, PGN parsing, engine, analysis, board, and UI
+The app is split so the UI can be overhauled without touching (or breaking) the logic:
+
+- `core.js` — **all logic, zero DOM.** Fetching, PGN parsing, the Stockfish engine
+  wrapper, move grading, position aggregation, book/custom-line exemptions, and
+  persistence. Exposed as `window.CMT` in the browser and via `module.exports` in
+  Node. The data model (Settings, UserMove, Position, Play) is documented at the top
+  of the file.
+- `app.js` — **thin UI layer.** Reads settings from inputs, renders the list/board/
+  detail panels, wires events. Everything it does goes through the `CMT` API.
+- `index.html` / `styles.css` — layout and styling.
+- `test/core.test.js` — test suite for the core (33 tests, no framework). Run with
+  `npm install` then `npm test`. **When changing the UI, a green test run means the
+  core still behaves** — the UI's only obligations are the CMT API and element IDs it
+  chooses itself.
+
+Under-the-hood behavior worth knowing:
+
+- Engine eval writes are **batched** into single IndexedDB transactions (flushed every
+  50 evals / 800 ms / on tab close) instead of one transaction per move.
+- A hung engine eval **times out after 60 s**, the worker is auto-restarted, and the
+  move is skipped; five consecutive failures abort the run with partial results kept.
+- Position keys drop the en-passant field unless an ep capture is actually possible,
+  so identical positions reached via different move orders group together. Keys are
+  re-derived from FENs whenever results are loaded from storage or an import file.
