@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Chess Mistake Trainer</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header>
+  <h1>♟ Chess Mistake Trainer</h1>
+  <p class="tagline">Pull your Chess.com games, find the positions where you keep going wrong, and drill them.</p>
+</header>
+
+<main>
+  <section class="panel controls">
+    <div class="row">
+      <label>Chess.com username
+        <input id="username" type="text" value="your-username" spellcheck="false" />
+      </label>
+      <label>Lookback (days)
+        <input id="lookback" type="number" value="90" min="1" max="3650" />
+      </label>
+      <label>Max games (0 = unlimited)
+        <input id="maxGames" type="number" value="40" min="0" />
+      </label>
+      <label>Analyze up to move #
+        <input id="maxMove" type="number" value="16" min="1" max="60" />
+      </label>
+      <label>Engine depth
+        <input id="depth" type="number" value="12" min="6" max="20" />
+      </label>
+    </div>
+
+    <details class="advanced">
+      <summary>Advanced: mistake thresholds &amp; phases</summary>
+      <p class="hint">A move's quality is graded by how many centipawns (cp) it loses versus the engine's best move. Lower cp loss = better. Positions are flagged when your move is worse than the acceptable grade for that phase of the game.</p>
+      <div class="grid2">
+        <fieldset>
+          <legend>Grade thresholds (max cp loss)</legend>
+          <label>Best ≤ <input id="thBest" type="number" value="10" /></label>
+          <label>Excellent ≤ <input id="thExc" type="number" value="25" /></label>
+          <label>Good ≤ <input id="thGood" type="number" value="50" /></label>
+          <label>Inaccuracy ≤ <input id="thInacc" type="number" value="100" /></label>
+          <label>Mistake ≤ <input id="thMist" type="number" value="200" /></label>
+          <label class="muted">Blunder = anything worse</label>
+        </fieldset>
+        <fieldset>
+          <legend>Game phases &amp; acceptable grade</legend>
+          <label>Opening: moves 1–<input id="phOpenEnd" type="number" value="8" />, accept down to
+            <select id="accOpen"></select>
+          </label>
+          <label>Middlegame: through move <input id="phMidEnd" type="number" value="25" />, accept down to
+            <select id="accMid"></select>
+          </label>
+          <label>Endgame: after, accept down to
+            <select id="accEnd"></select>
+          </label>
+          <label>Check opening book through move <input id="bookMax" type="number" value="12" min="0" max="30" /></label>
+        </fieldset>
+      </div>
+      <div class="row">
+        <label>Flag if bad ≥ this share of the time
+          <input id="flagShare" type="number" value="0.5" min="0" max="1" step="0.05" />
+        </label>
+        <label>Min times position seen
+          <input id="minOcc" type="number" value="1" min="1" />
+        </label>
+      </div>
+    </details>
+
+    <div class="row actions">
+      <button id="run" class="primary">Fetch &amp; Analyze</button>
+      <button id="stop" disabled>Stop</button>
+      <label class="filebtn">Load PGN file<input id="pgnFile" type="file" accept=".pgn,.txt" hidden multiple /></label>
+      <button id="exportBtn" disabled>Export results</button>
+      <label class="filebtn">Import results<input id="importFile" type="file" accept=".json" hidden /></label>
+      <button id="clearCache" title="Delete saved engine evals and the auto-saved last analysis">Clear saved cache</button>
+    </div>
+
+    <div id="progress" class="progress hidden">
+      <div class="bar"><span id="barFill"></span></div>
+      <div id="status" class="status"></div>
+    </div>
+  </section>
+
+  <section class="workspace">
+    <div class="panel list">
+      <div class="list-head">
+        <h2>Problem positions</h2>
+        <div class="list-controls">
+          <label class="inline"><input type="checkbox" id="ignoreBook" checked /> ignore book moves</label>
+          <label class="inline">skip first <input id="hideBefore" type="number" value="0" min="0" max="40" class="tiny" /> moves</label>
+          <label class="inline"><input type="checkbox" id="showAll" /> show all analyzed positions</label>
+          <select id="sortBy">
+            <option value="occ">Sort: most frequent</option>
+            <option value="badshare">Sort: worst rate</option>
+            <option value="cpl">Sort: biggest avg loss</option>
+            <option value="move">Sort: earliest move</option>
+          </select>
+        </div>
+      </div>
+      <div id="results" class="results"><p class="empty">No analysis yet. Fill in your details and hit <b>Fetch &amp; Analyze</b>.</p></div>
+    </div>
+
+    <div class="panel detail">
+      <div id="detail" class="detail-body"><p class="empty">Select a position on the left to review and retry it.</p></div>
+    </div>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
