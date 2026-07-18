@@ -16,7 +16,27 @@ let lastResults = null;
 let currentPos = null;
 let currentList = [];      // rendered order, for keyboard nav + "Next"
 let isRunning = false;
+let isImporting = false;
+let isBookChecking = false;
+let gradingPromise = null;
+let interactionVersion = 0;
 const control = { stop: false };
+const DRILL_PREFS_KEY = "cmt-drill-prefs";
+const drillState = {
+  active: false,
+  complete: false,
+  queueKeys: [],
+  sourceKeys: [],
+  index: 0,
+  config: null,
+  settings: null,
+  acceptByKey: new Map(),
+  outcomes: new Map(),
+  sessionId: 0,
+  historyOwned: false,
+  openSetupAfterExit: false,
+  exiting: false,
+};
 
 // ----------------------------- settings -----------------------------
 function readSettings() {
@@ -46,10 +66,14 @@ function readSettings() {
 // ----------------------------- status / progress -----------------------------
 function onStatus(t) { $("status").textContent = t; }
 function onProgress(f) { $("barFill").style.width = Math.round(f * 100) + "%"; }
+function syncRunDisabled() {
+  $("run").disabled = isRunning || isImporting || !!gradingPromise;
+}
 function setBusy(busy) {
   isRunning = busy;
-  $("run").disabled = busy;
+  syncRunDisabled();
   $("stop").disabled = !busy;
+  if ($("openDrill")) refreshDrillAvailability();
 }
 
 async function ensureEngine() {
@@ -62,6 +86,15 @@ async function ensureEngine() {
 // ----------------------------- run orchestration -----------------------------
 async function run(games) {
   if (isRunning) return;
+  if (isImporting) {
+    onStatus("Wait for the current import to finish before starting an analysis.");
+    return;
+  }
+  if (gradingPromise) {
+    onStatus("Wait for the current move to finish grading before starting a new analysis.");
+    return;
+  }
+  if (drillState.active) exitDrillForDataChange();
   const s = readSettings();
   if (!s.username && !games) { onStatus("Enter a Chess.com username first."); return; }
   control.stop = false;
@@ -170,13 +203,17 @@ function pills(level, isBook, isIgnored) {
 }
 
 function renderList() {
-  if (!lastResults) return;
+  if (!lastResults) {
+    refreshDrillAvailability();
+    return;
+  }
   const showAll = $("showAll").checked;
   const hideBefore = +$("hideBefore").value || 0;
   CMT.recomputeFlags(lastResults, readSettings(), $("ignoreBook").checked, CMT.customBook.set);
   let list = lastResults.filter((r) => (showAll || r.flagged) && r.moveNo > hideBefore);
   list = CMT.sortResults(list, $("sortBy").value);
   currentList = list;
+  refreshDrillAvailability();
   const el = $("results");
   if (!list.length) {
     el.innerHTML = `<div class="hero"><div class="hero-board" aria-hidden="true"></div>
@@ -209,6 +246,389 @@ function renderList() {
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectPosition(r, card); } });
     el.appendChild(card);
   }
+}
+
+// ----------------------------- shuffled drill -----------------------------
+function normalizeDrillConfig(raw) {
+  raw = raw || {};
+  const minOccurrences = Math.max(1, Math.ceil(Number(raw.minOccurrences) || 1));
+  const rate = Number(raw.minMistakeShare);
+  const minMistakeShare = CMT.clamp(Number.isFinite(rate) ? rate : 0.5, 0, 1);
+  const parsedLimit = Number(raw.limit);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.floor(parsedLimit) : null;
+  return {
+    minOccurrences,
+    minMistakeShare,
+    skipFirst: Math.max(0, Math.floor(Number(raw.skipFirst) || 0)),
+    limit,
+  };
+}
+
+function currentDrillConfig() {
+  const s = readSettings();
+  return normalizeDrillConfig({
+    minOccurrences: s.minOcc,
+    minMistakeShare: s.flagShare,
+    skipFirst: +$("hideBefore").value || 0,
+    limit: null,
+  });
+}
+
+function setupDrillConfig() {
+  return normalizeDrillConfig({
+    minOccurrences: $("drillMinOcc").value,
+    minMistakeShare: (+$("drillMinRate").value || 0) / 100,
+    skipFirst: +$("hideBefore").value || 0,
+    limit: $("drillLimit").value === "all" ? null : +$("drillLimit").value,
+  });
+}
+
+function computeDrillPool(config) {
+  if (!lastResults || !lastResults.length) return [];
+  CMT.recomputeFlags(lastResults, readSettings(), $("ignoreBook").checked, CMT.customBook.set);
+  return CMT.filterDrillPositions(lastResults, config)
+    .filter((r) => r.fen && r.best);
+}
+
+function refreshDrillAvailability() {
+  const button = $("openDrill");
+  const count = $("drillEligibleCount");
+  if (!button || !count) return;
+  const pool = computeDrillPool(currentDrillConfig());
+  button.disabled = !lastResults || !lastResults.length || isRunning || isImporting || isBookChecking || !!gradingPromise;
+  count.textContent = isBookChecking ? "Checking book…" : lastResults ? `${pool.length} eligible` : "Analyze first";
+  if (!$("drillSetup").hidden) updateDrillPoolPreview();
+}
+
+function updateDrillPoolPreview() {
+  const config = setupDrillConfig();
+  const pool = computeDrillPool(config);
+  const roundSize = config.limit ? Math.min(config.limit, pool.length) : pool.length;
+  const preview = $("drillPoolPreview");
+  const start = $("startDrill");
+  if (!pool.length) {
+    preview.textContent = "No positions match. Lower either threshold to widen the pool.";
+    start.disabled = true;
+  } else {
+    preview.textContent = config.limit && pool.length > roundSize
+      ? `${pool.length} match; ${roundSize} will be chosen randomly for this round.`
+      : `${roundSize} position${roundSize === 1 ? "" : "s"} will appear once in this round.`;
+    start.disabled = false;
+  }
+}
+
+function loadDrillPrefs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(DRILL_PREFS_KEY));
+    if (!saved) return;
+    const config = normalizeDrillConfig(saved);
+    $("minOcc").value = config.minOccurrences;
+    $("flagShare").value = config.minMistakeShare;
+    $("drillLimit").value = config.limit == null ? "all" : String(config.limit);
+  } catch (e) { /* ignore malformed local preferences */ }
+}
+
+function saveDrillPrefs(config) {
+  try {
+    localStorage.setItem(DRILL_PREFS_KEY, JSON.stringify({
+      minOccurrences: config.minOccurrences,
+      minMistakeShare: config.minMistakeShare,
+      limit: config.limit,
+    }));
+  } catch (e) { /* preferences are optional */ }
+}
+
+function openDrillSetup() {
+  if (isBookChecking) {
+    onStatus("Wait for the opening-book check to finish before starting a drill.");
+    return;
+  }
+  if (!lastResults || !lastResults.length) {
+    onStatus("Analyze some games before starting a drill.");
+    return;
+  }
+  const s = readSettings();
+  $("drillMinOcc").value = s.minOcc;
+  $("drillMinRate").value = Math.round(s.flagShare * 100);
+  $("drillSetup").hidden = false;
+  updateDrillPoolPreview();
+  $("drillMinOcc").focus();
+}
+
+function closeDrillSetup() {
+  $("drillSetup").hidden = true;
+}
+
+function copySettingsForDrill() {
+  const s = readSettings();
+  return Object.assign({}, s, {
+    th: Object.assign({}, s.th),
+    phases: Object.assign({}, s.phases),
+  });
+}
+
+function positionForDrillKey(key) {
+  return (lastResults || []).find((r) => r.key === key) || null;
+}
+
+function setDrillHistoryState() {
+  if (!MOBILE() || drillState.historyOwned) return;
+  history.pushState({ trainer: 1, drill: drillState.sessionId }, "");
+  drillState.historyOwned = true;
+}
+
+function beginDrillRound(sourcePositions, config, preserveHistory) {
+  const shuffled = CMT.shuffleCopy(sourcePositions);
+  const chosen = config.limit ? shuffled.slice(0, config.limit) : shuffled;
+  if (!chosen.length) return false;
+
+  interactionVersion++;
+  drillState.active = true;
+  drillState.complete = false;
+  drillState.queueKeys = chosen.map((r) => r.key);
+  drillState.sourceKeys = sourcePositions.map((r) => r.key);
+  drillState.index = 0;
+  drillState.config = Object.assign({}, config);
+  drillState.settings = copySettingsForDrill();
+  drillState.acceptByKey = new Map(sourcePositions.map((r) => [r.key, r.accept]));
+  drillState.outcomes = new Map();
+  drillState.navigating = false;
+  drillState.sessionId++;
+  drillState.openSetupAfterExit = false;
+  drillState.exiting = false;
+
+  document.body.classList.add("drill-active");
+  closeDrillSetup();
+  if (!preserveHistory) setDrillHistoryState();
+  else if (drillState.historyOwned && history.state && history.state.drill) {
+    history.replaceState({ trainer: 1, drill: drillState.sessionId }, "");
+  }
+  showDrillPosition();
+  return true;
+}
+
+function startDrill() {
+  if (gradingPromise || isRunning || isImporting || isBookChecking) return;
+  const config = setupDrillConfig();
+  const pool = computeDrillPool(config);
+  if (!pool.length) {
+    updateDrillPoolPreview();
+    return;
+  }
+
+  // These are the same eligibility controls used by the normal mistake list.
+  $("minOcc").value = config.minOccurrences;
+  $("flagShare").value = config.minMistakeShare;
+  saveDrillPrefs(config);
+  renderList();
+  beginDrillRound(pool, config, false);
+}
+
+function drillOutcome(key) {
+  let outcome = drillState.outcomes.get(key);
+  if (!outcome) {
+    outcome = { attempts: 0, firstTry: null, solved: false, revealed: false, skipped: false };
+    drillState.outcomes.set(key, outcome);
+  }
+  return outcome;
+}
+
+function syncDrillControls() {
+  if (!drillState.active || drillState.complete || !currentPos) return;
+  const outcome = drillOutcome(currentPos.key);
+  const pending = !!gradingPromise || isImporting || boardState.locked;
+  const reveal = $("drillReveal");
+  const reset = $("drillReset");
+  const next = $("drillNext");
+  if (reveal) {
+    reveal.disabled = pending || outcome.revealed || outcome.solved;
+    reveal.textContent = outcome.revealed ? "Answer revealed" : outcome.solved ? "Solved" : "Reveal answer";
+  }
+  if (reset) reset.disabled = pending;
+  if (next) {
+    next.disabled = pending;
+    const last = drillState.index >= drillState.queueKeys.length - 1;
+    const resolved = outcome.solved || outcome.revealed;
+    next.textContent = last ? "Finish" : resolved ? "Next →" : "Skip →";
+  }
+}
+
+function showDrillPosition() {
+  if (!drillState.active) return;
+  let r = positionForDrillKey(drillState.queueKeys[drillState.index]);
+  while (!r && drillState.index < drillState.queueKeys.length - 1) {
+    drillState.index++;
+    r = positionForDrillKey(drillState.queueKeys[drillState.index]);
+  }
+  if (!r) {
+    finishDrill();
+    return;
+  }
+
+  interactionVersion++;
+  currentPos = r;
+  boardState.chess = new Chess(r.fen);
+  boardState.orient = r.color;
+  boardState.sel = null;
+  boardState.best = null;
+  boardState.locked = false;
+  boardState.onMove = retryMove;
+  drillState.navigating = false;
+
+  const positionNumber = drillState.index + 1;
+  const total = drillState.queueKeys.length;
+  const progress = Math.round((drillState.index / total) * 100);
+  $("detail").innerHTML = `
+    <div class="drill-shell">
+      <div class="drill-header">
+        <div class="drill-header-copy">
+          <div class="drill-kicker">Shuffle drill</div>
+          <h2>Position ${positionNumber} of ${total}</h2>
+          <div class="drill-position-meta">${r.color === "w" ? "White" : "Black"} to move</div>
+        </div>
+        <button id="exitDrill" type="button">End drill</button>
+      </div>
+      <div class="drill-progress" aria-label="${drillState.index} of ${total} positions completed">
+        <div class="drill-progress-meta"><span>${drillState.index} completed</span><span>${total - drillState.index} remaining</span></div>
+        <div class="drill-progress-track"><span class="drill-progress-fill" style="width:${progress}%"></span></div>
+      </div>
+      <div class="board-wrap">
+        <div id="board" class="board" tabindex="0" aria-label="Chess position for drill ${positionNumber}"></div>
+        <div id="feedback" class="feedback" aria-live="polite">Your move. Play a move that avoids the mistake.</div>
+      </div>
+      <div class="drill-actions">
+        <button id="drillReveal" type="button">Reveal answer</button>
+        <button id="drillReset" type="button">Reset</button>
+        <button id="drillNext" class="next" type="button">Skip →</button>
+      </div>
+    </div>`;
+
+  renderBoard();
+  $("exitDrill").addEventListener("click", () => requestExitDrill(false));
+  $("drillReveal").addEventListener("click", revealDrillAnswer);
+  $("drillReset").addEventListener("click", resetCurrent);
+  $("drillNext").addEventListener("click", advanceDrill);
+  syncDrillControls();
+  requestAnimationFrame(() => $("board") && $("board").focus && $("board").focus());
+}
+
+function revealDrillAnswer() {
+  if (!drillState.active || drillState.complete || !currentPos || gradingPromise) return;
+  const outcome = drillOutcome(currentPos.key);
+  if (outcome.solved) return;
+  outcome.revealed = true;
+  boardState.best = currentPos.best;
+  drawArrow();
+  const bestSan = CMT.uciToSan(currentPos.fen, currentPos.best) || currentPos.best || "?";
+  const fb = $("feedback");
+  fb.className = "feedback";
+  fb.innerHTML = `Best move: <b>${CMT.escapeHtml(bestSan)}</b>. You can try it, then continue.`;
+  syncDrillControls();
+}
+
+function advanceDrill() {
+  if (!drillState.active || drillState.complete || gradingPromise || drillState.navigating) return;
+  drillState.navigating = true;
+  interactionVersion++;
+  const outcome = currentPos ? drillOutcome(currentPos.key) : null;
+  if (outcome && !outcome.solved && !outcome.revealed) outcome.skipped = true;
+  if (drillState.index >= drillState.queueKeys.length - 1) {
+    finishDrill();
+    return;
+  }
+  drillState.index++;
+  showDrillPosition();
+}
+
+function finishDrill() {
+  if (!drillState.active) return;
+  interactionVersion++;
+  drillState.complete = true;
+  drillState.navigating = false;
+  currentPos = null;
+  boardState.chess = null;
+  boardState.best = null;
+  boardState.locked = false;
+
+  const outcomes = drillState.queueKeys.map((key) => drillOutcome(key));
+  const firstTry = outcomes.filter((o) => o.firstTry === true && !o.revealed).length;
+  const recovered = outcomes.filter((o) => o.solved && o.firstTry !== true && !o.revealed).length;
+  const assisted = outcomes.filter((o) => o.revealed || o.skipped).length;
+  $("detail").innerHTML = `
+    <div class="drill-shell">
+      <section class="drill-summary" aria-live="polite">
+        <div class="drill-kicker">Round complete</div>
+        <h2>You finished ${drillState.queueKeys.length} position${drillState.queueKeys.length === 1 ? "" : "s"}</h2>
+        <p>Run the same pool again to get a fresh order, or adjust the thresholds before the next round.</p>
+        <div class="drill-summary-grid">
+          <div class="drill-summary-stat"><span class="drill-summary-value">${firstTry}</span><span class="drill-summary-label">First try</span></div>
+          <div class="drill-summary-stat"><span class="drill-summary-value">${recovered}</span><span class="drill-summary-label">Recovered</span></div>
+          <div class="drill-summary-stat"><span class="drill-summary-value">${assisted}</span><span class="drill-summary-label">Revealed / skipped</span></div>
+        </div>
+        <div class="btnrow">
+          <button id="exitDrillSummary" type="button">Back to positions</button>
+          <button id="adjustDrill" type="button">Adjust filters</button>
+          <button id="reshuffleDrill" class="primary" type="button">Shuffle again</button>
+        </div>
+      </section>
+    </div>`;
+  $("exitDrillSummary").addEventListener("click", () => requestExitDrill(false));
+  $("adjustDrill").addEventListener("click", () => requestExitDrill(true));
+  $("reshuffleDrill").addEventListener("click", reshuffleDrill);
+}
+
+function reshuffleDrill() {
+  if (!drillState.active || gradingPromise) return;
+  const source = drillState.sourceKeys.map(positionForDrillKey).filter(Boolean);
+  if (!source.length) {
+    requestExitDrill(true);
+    return;
+  }
+  beginDrillRound(source, drillState.config, true);
+}
+
+function requestExitDrill(openSetup) {
+  if (!drillState.active || drillState.exiting) return;
+  drillState.exiting = true;
+  drillState.openSetupAfterExit = !!openSetup;
+  if (drillState.historyOwned && history.state && history.state.drill) {
+    history.back();
+  } else {
+    exitDrillNow();
+  }
+}
+
+function exitDrillNow() {
+  if (!drillState.active) return;
+  const openSetup = drillState.openSetupAfterExit;
+  interactionVersion++;
+  document.body.classList.remove("drill-active");
+  document.body.classList.remove("trainer-open");
+  drillState.active = false;
+  drillState.complete = false;
+  drillState.queueKeys = [];
+  drillState.sourceKeys = [];
+  drillState.index = 0;
+  drillState.settings = null;
+  drillState.acceptByKey = new Map();
+  drillState.outcomes = new Map();
+  drillState.historyOwned = false;
+  drillState.openSetupAfterExit = false;
+  drillState.navigating = false;
+  drillState.exiting = false;
+  currentPos = null;
+  boardState.chess = null;
+  boardState.best = null;
+  boardState.locked = false;
+  $("detail").innerHTML = '<p class="empty">Select a position to review and retry it.</p>';
+  renderList();
+  if (openSetup) openDrillSetup();
+}
+
+function exitDrillForDataChange() {
+  if (!drillState.active) return;
+  if (drillState.historyOwned && history.state && history.state.drill) history.back();
+  exitDrillNow();
 }
 
 // ----------------------------- interactive board -----------------------------
@@ -352,8 +772,18 @@ function openTrainer() {
   }
 }
 function closeTrainer() { document.body.classList.remove("trainer-open"); }
+function requestCloseTrainer() {
+  if (MOBILE() && history.state && history.state.trainer) history.back();
+  else closeTrainer();
+}
 
 function selectPosition(r, cardEl) {
+  if (drillState.active) return;
+  if (gradingPromise) {
+    onStatus("Wait for the current move to finish grading before changing positions.");
+    return;
+  }
+  interactionVersion++;
   currentPos = r;
   document.querySelectorAll(".card").forEach((c) => c.classList.remove("active"));
   if (cardEl) cardEl.classList.add("active");
@@ -402,7 +832,7 @@ function selectPosition(r, cardEl) {
   countUp($("badPct"), Math.round(r.badShare * 100), "%");
 
   $("backBtn").addEventListener("click", () => {
-    if (history.state && history.state.trainer) history.back(); else closeTrainer();
+    requestCloseTrainer();
   });
   document.querySelectorAll(".igbtn").forEach((b) => b.addEventListener("click", () => {
     CMT.toggleManualIgnore(r, b.dataset.uci, b.dataset.san);
@@ -412,6 +842,7 @@ function selectPosition(r, cardEl) {
     selectPosition(r, el2 || null);
   }));
   $("showBest").addEventListener("click", () => {
+    if (gradingPromise) return;
     boardState.best = r.best;
     drawArrow();
     const bestSan = CMT.uciToSan(r.fen, r.best) || r.best || "?";
@@ -421,6 +852,7 @@ function selectPosition(r, cardEl) {
   });
   $("resetBoard").addEventListener("click", resetCurrent);
   $("nextPos").addEventListener("click", () => {
+    if (gradingPromise) return;
     const i = currentList.indexOf(currentPos);
     const next = currentList[i + 1];
     if (!next) return;
@@ -434,52 +866,112 @@ function selectPosition(r, cardEl) {
 
 function resetCurrent() {
   const r = currentPos;
-  if (!r) return;
+  if (!r || gradingPromise) return;
+  interactionVersion++;
   boardState.chess = new Chess(r.fen);
   boardState.sel = null; boardState.best = null; boardState.locked = false;
   renderBoard();
   const fb = $("feedback");
   fb.className = "feedback";
-  fb.textContent = "Your move. Play the move you think is best.";
+  fb.textContent = drillState.active
+    ? "Your move. Play a move that avoids the mistake."
+    : "Your move. Play the move you think is best.";
+  syncDrillControls();
+}
+
+function syncAttemptControls() {
+  const pending = !!gradingPromise || isImporting;
+  for (const id of ["showBest", "resetBoard", "nextPos"]) {
+    const button = $(id);
+    if (!button) continue;
+    if (id === "nextPos") {
+      const index = currentList.indexOf(currentPos);
+      button.disabled = pending || index < 0 || index >= currentList.length - 1;
+    } else {
+      button.disabled = pending;
+    }
+  }
+  syncDrillControls();
+  refreshDrillAvailability();
 }
 
 async function retryMove(from, to, promo) {
   const r = currentPos;
+  if (!r || gradingPromise || isImporting || boardState.locked) return;
   const test = new Chess(r.fen);
   const mv = test.move({ from, to, promotion: promo });
   if (!mv) return;
+  const version = interactionVersion;
+  const sessionId = drillState.sessionId;
+  const inDrill = drillState.active && !drillState.complete;
+  const positionKey = r.key;
   boardState.locked = true;
   boardState.chess = test;
   renderBoard();
   const fb = $("feedback");
   fb.className = "feedback";
   fb.textContent = "Thinking…";
-  const s = readSettings();
+  const s = inDrill ? drillState.settings : readSettings();
   let a;
-  try {
+  const work = (async () => {
     await ensureEngine();
-    a = await CMT.analyzeMove({
+    return CMT.analyzeMove({
       fenBefore: r.fen, fenAfter: test.fen(), uci: from + to + (promo || ""),
       terminalAfter: test.game_over(), matedAfter: test.in_checkmate(),
     }, s.depth, s.th, engine);
+  })();
+  gradingPromise = work;
+  syncRunDisabled();
+  syncAttemptControls();
+  const isCurrentAttempt = () =>
+    interactionVersion === version &&
+    currentPos && currentPos.key === positionKey &&
+    (!inDrill || (drillState.active && drillState.sessionId === sessionId));
+  try {
+    a = await work;
   } catch (e) {
-    fb.textContent = "Engine error: " + e.message;
-    boardState.locked = false;
+    if (isCurrentAttempt()) fb.textContent = "Engine error: " + e.message + ". Try again.";
     return;
+  } finally {
+    if (gradingPromise === work) gradingPromise = null;
+    syncRunDisabled();
+    if (isCurrentAttempt()) {
+      boardState.locked = false;
+      syncAttemptControls();
+    }
   }
-  const cls = a.level <= 1 ? "good" : a.level >= 4 ? "bad" : "warn";
+  if (!isCurrentAttempt()) return;
+
+  const acceptedLevel = inDrill
+    ? drillState.acceptByKey.get(positionKey)
+    : 1;
+  const acceptable = a.level <= (Number.isFinite(acceptedLevel) ? acceptedLevel : 1);
+  const cls = acceptable ? "good" : a.level >= 4 ? "bad" : "warn";
   const bestSan = CMT.uciToSan(r.fen, a.best) || a.best;
   const same = (from + to + (promo || "")) === a.best || a.cpl === 0;
   fb.className = "feedback " + cls + (cls === "good" ? " pop" : "");
-  fb.innerHTML = same
-    ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>! The engine agrees. Hit <b>Next</b> to keep the streak going.`
-    : `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b> (loses ${a.cpl.toFixed(0)}cp). Best was <b>${CMT.escapeHtml(bestSan)}</b>. <button class="igbtn" id="tryAgain">Try again</button>`;
+  if (inDrill) {
+    const outcome = drillOutcome(positionKey);
+    outcome.attempts++;
+    if (outcome.firstTry == null) {
+      outcome.firstTry = outcome.attempts === 1 && !outcome.revealed && acceptable;
+    }
+    if (acceptable) outcome.solved = true;
+    fb.innerHTML = same
+      ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>! You found the engine's move.`
+      : acceptable
+        ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>. That avoids the mistake; the engine preferred <b>${CMT.escapeHtml(bestSan)}</b>.`
+        : `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b> (loses ${a.cpl.toFixed(0)}cp). Best was <b>${CMT.escapeHtml(bestSan)}</b>. <button class="igbtn" id="tryAgain">Try again</button>`;
+  } else {
+    fb.innerHTML = same
+      ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>! The engine agrees. Hit <b>Next</b> to keep the streak going.`
+      : `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b> (loses ${a.cpl.toFixed(0)}cp). Best was <b>${CMT.escapeHtml(bestSan)}</b>. <button class="igbtn" id="tryAgain">Try again</button>`;
+  }
   const ta = $("tryAgain");
   if (ta) ta.addEventListener("click", resetCurrent);
   boardState.best = a.best;
   drawArrow();
-  await CMT.sleep(500);
-  boardState.locked = false;
+  syncDrillControls();
 }
 
 // ----------------------------- custom lines panel -----------------------------
@@ -645,25 +1137,51 @@ async function restoreSession() {
   $("exportBtn").disabled = false;
   const cached = await CMT.storage.count("evals");
   onStatus(`Restored last analysis (${saved.username || "?"}, ${saved.results.length} positions). ${cached} cached evals on disk.`);
-  renderList();
   const s = readSettings();
-  if (s.bookMax > 0 && lastResults.some((r) => r.moveNo <= s.bookMax && !r.bookKnown)) {
-    await CMT.annotateBook(lastResults, s, { onStatus, control });
-    CMT.saveSession(saved.username, lastResults);
-    renderList();
-    onStatus("Opening-book check complete.");
+  const needsBook = s.bookMax > 0 && lastResults.some((r) => r.moveNo <= s.bookMax && !r.bookKnown);
+  isBookChecking = needsBook;
+  renderList();
+  if (needsBook) {
+    try {
+      await CMT.annotateBook(lastResults, s, { onStatus, control });
+      CMT.saveSession(saved.username, lastResults);
+      onStatus("Opening-book check complete.");
+    } catch (e) {
+      onStatus("Opening-book check could not finish: " + e.message);
+    } finally {
+      isBookChecking = false;
+      renderList();
+    }
   }
 }
 
 // ----------------------------- keyboard -----------------------------
 function onKeydown(e) {
   const tag = (e.target.tagName || "").toLowerCase();
-  if (tag === "input" || tag === "textarea" || tag === "select") return;
   if (e.key === "Escape") {
     if ($("drawer").classList.contains("show")) { setDrawer(false); return; }
-    if (document.body.classList.contains("trainer-open")) { closeTrainer(); return; }
+    if (drillState.active) { requestExitDrill(false); return; }
+    if (!$("drillSetup").hidden) { closeDrillSetup(); return; }
+    if (document.body.classList.contains("trainer-open")) { requestCloseTrainer(); return; }
+  }
+  if (["input", "textarea", "select", "button", "a"].includes(tag) || e.target.isContentEditable) return;
+  if (drillState.active) {
+    if (drillState.complete || gradingPromise) return;
+    if ((e.key === "ArrowDown" || e.key === "n" || e.key === "N") && !e.repeat) {
+      e.preventDefault();
+      const next = $("drillNext");
+      if (next) next.click();
+    } else if (e.key === "b" || e.key === "B") {
+      const reveal = $("drillReveal");
+      if (reveal) reveal.click();
+    } else if (e.key === "r" || e.key === "R") {
+      const reset = $("drillReset");
+      if (reset) reset.click();
+    }
+    return;
   }
   if (!currentList.length) return;
+  if (gradingPromise) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     const i = currentPos ? currentList.indexOf(currentPos) : -1;
@@ -699,6 +1217,7 @@ function fillGradeSelectors() {
 
 function init() {
   fillGradeSelectors();
+  loadDrillPrefs();
 
   // Theme engine
   Themes.onChange((theme, mode) => {
@@ -737,10 +1256,22 @@ function init() {
   $("run").addEventListener("click", () => run(null));
   $("heroRun") && $("heroRun").addEventListener("click", () => run(null));
   $("stop").addEventListener("click", () => { control.stop = true; onStatus("Stopping after current move…"); });
+  $("openDrill").addEventListener("click", openDrillSetup);
+  $("cancelDrillSetup").addEventListener("click", closeDrillSetup);
+  $("startDrill").addEventListener("click", startDrill);
+  for (const id of ["drillMinOcc", "drillMinRate", "drillLimit"]) {
+    $(id).addEventListener(id === "drillLimit" ? "change" : "input", updateDrillPoolPreview);
+  }
 
-  for (const [id, evt] of [["showAll", "change"], ["sortBy", "change"], ["ignoreBook", "change"], ["hideBefore", "input"]]) {
+  for (const [id, evt] of [
+    ["showAll", "change"], ["sortBy", "change"], ["ignoreBook", "change"], ["hideBefore", "input"],
+    ["minOcc", "input"], ["flagShare", "input"],
+    ["phOpenEnd", "input"], ["phMidEnd", "input"],
+    ["accOpen", "change"], ["accMid", "change"], ["accEnd", "change"],
+  ]) {
     $(id).addEventListener(evt, renderList);
   }
+  refreshDrillAvailability();
 
   $("addLine").addEventListener("click", () => {
     const text = $("lineInput").value.trim();
@@ -756,6 +1287,11 @@ function init() {
   $("lineInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("addLine").click(); } });
 
   $("clearCache").addEventListener("click", async () => {
+    if (gradingPromise || isImporting) {
+      onStatus("Wait for the current operation to finish before clearing saved data.");
+      return;
+    }
+    if (drillState.active) exitDrillForDataChange();
     await CMT.clearCaches(engine);
     CMT.storage.set("sessions", "themes", Themes.data()); // themes survive too
     onStatus("Cleared saved evals and results (custom lines and themes kept).");
@@ -800,9 +1336,18 @@ function init() {
     const f = e.target.files[0];
     e.target.value = "";
     if (!f) return;
+    if (gradingPromise) {
+      onStatus("Wait for the current move to finish grading before importing a backup.");
+      return;
+    }
+    isImporting = true;
+    boardState.locked = true;
+    syncRunDisabled();
+    syncAttemptControls();
     try {
       const data = JSON.parse(await f.text());
       const { results, summary } = await CMT.applyImport(data, engine);
+      if (drillState.active) exitDrillForDataChange();
       lastResults = results;
       if (summary.username) $("username").value = summary.username;
       if (data.themes) { Themes.importData(data.themes); renderThemeUI(); }
@@ -814,11 +1359,21 @@ function init() {
         + (summary.customGroups ? ` + ${summary.customGroups} line group(s)` : "")
         + (summary.themes ? " + themes" : "")
         + " from file.");
-    } catch (err) { onStatus("Could not read backup: " + err.message); }
+    } catch (err) {
+      onStatus("Could not read backup: " + err.message);
+    } finally {
+      isImporting = false;
+      if (currentPos && !gradingPromise) boardState.locked = false;
+      syncRunDisabled();
+      syncAttemptControls();
+    }
   });
 
   // Mobile back navigation
-  window.addEventListener("popstate", () => { closeTrainer(); });
+  window.addEventListener("popstate", () => {
+    if (drillState.active) exitDrillNow();
+    else closeTrainer();
+  });
 
   // Keyboard
   document.addEventListener("keydown", onKeydown);

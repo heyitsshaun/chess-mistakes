@@ -572,6 +572,65 @@
     return list.slice().sort(by);
   }
 
+  // Select positions eligible for a drill without changing the source results.
+  // Shares use the same 0–1 representation as Position.badShare. Thresholds are
+  // inclusive; skipFirst hides positions through that full-move number.
+  function filterDrillPositions(results, options) {
+    if (!Array.isArray(results)) return [];
+    options = options && typeof options === "object" ? options : {};
+
+    const finite = (value, fallback) => {
+      try {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : fallback;
+      } catch (e) {
+        return fallback;
+      }
+    };
+    const minOccurrences = Math.max(1, Math.ceil(finite(options.minOccurrences, 1)));
+    const minMistakeShare = clamp(finite(options.minMistakeShare, 0), 0, 1);
+    const skipFirst = Math.max(0, Math.floor(finite(options.skipFirst, 0)));
+
+    const out = [];
+    const seen = new Set();
+    for (const position of results) {
+      if (!position || typeof position !== "object") continue;
+      const key = typeof position.key === "string" ? position.key : "";
+      if (!key || seen.has(key)) continue;
+
+      const total = finite(position.total, NaN);
+      const badCount = finite(position.badCount, NaN);
+      const badShare = finite(position.badShare, NaN);
+      const moveNo = finite(position.moveNo, NaN);
+      if (
+        !Number.isFinite(total) || total < minOccurrences ||
+        !Number.isFinite(badCount) || badCount <= 0 ||
+        !Number.isFinite(badShare) || badShare < minMistakeShare ||
+        !Number.isFinite(moveNo) || moveNo <= skipFirst
+      ) continue;
+
+      seen.add(key);
+      out.push(position);
+    }
+    return out;
+  }
+
+  // Fisher–Yates on a shallow copy. An injectable RNG keeps the helper easy to
+  // test and lets callers opt into a seeded drill order later.
+  function shuffleCopy(items, rng = Math.random) {
+    if (!Array.isArray(items)) return [];
+    const out = items.slice();
+    const random = typeof rng === "function" ? rng : Math.random;
+    for (let i = out.length - 1; i > 0; i--) {
+      let sample = Number(random());
+      if (!Number.isFinite(sample)) sample = 0;
+      sample = clamp(sample, 0, 1 - Number.EPSILON);
+      const j = Math.floor(sample * (i + 1));
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  }
+
   // Re-derive keys (posKey may improve between versions) and guard shapes.
   // Run on anything loaded from storage or an import file.
   function normalizeResults(results) {
@@ -809,7 +868,8 @@
     // engine + storage
     Engine, storage,
     // fetch / analysis
-    fetchGames, analyzeMove, runAnalysis, finalize, recomputeFlags, sortResults, normalizeResults,
+    fetchGames, analyzeMove, runAnalysis, finalize, recomputeFlags, sortResults,
+    filterDrillPositions, shuffleCopy, normalizeResults,
     // book
     bookMovesFor, annotateBook,
     // custom lines

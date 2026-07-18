@@ -271,6 +271,119 @@ function fakeEngine(cpTable, bestTable) {
     assert.strictEqual(CMT.sortResults([a, b], "move")[0].key, "b");
   });
 
+  console.log("drill helpers");
+
+  test("filterDrillPositions: thresholds are inclusive and keys are deduplicated", () => {
+    const boundary = makePosition({ key: "boundary", total: 3, badCount: 1, badShare: 0.5, moveNo: 4 });
+    const another = makePosition({ key: "another", total: 4, badCount: 2, badShare: 0.75, moveNo: 8 });
+    const belowOccurrences = makePosition({ key: "few", total: 2, badCount: 2, badShare: 1, moveNo: 8 });
+    const belowShare = makePosition({ key: "low", total: 8, badCount: 3, badShare: 0.49, moveNo: 8 });
+    const duplicate = makePosition({ key: "boundary", total: 9, badCount: 9, badShare: 1, moveNo: 9 });
+    const input = [boundary, belowOccurrences, belowShare, another, duplicate];
+    const before = JSON.parse(JSON.stringify(input));
+
+    const out = CMT.filterDrillPositions(input, {
+      minOccurrences: 3,
+      minMistakeShare: 0.5,
+      skipFirst: 0,
+    });
+
+    assert.deepStrictEqual(out.map((p) => p.key), ["boundary", "another"]);
+    assert.strictEqual(out[0], boundary, "filter preserves the original position object");
+    assert.deepStrictEqual(input, before, "filter must not reorder or mutate its input or positions");
+  });
+
+  test("filterDrillPositions: a positive badCount is always required", () => {
+    const noBad = makePosition({ key: "none", total: 5, badCount: 0, badShare: 0.8, moveNo: 5 });
+    const someBad = makePosition({ key: "some", total: 5, badCount: 1, badShare: 0, moveNo: 5 });
+    const out = CMT.filterDrillPositions([noBad, someBad], {
+      minOccurrences: 1,
+      minMistakeShare: 0,
+    });
+    assert.deepStrictEqual(out.map((p) => p.key), ["some"]);
+  });
+
+  test("filterDrillPositions: skipFirst excludes positions through the boundary", () => {
+    const atBoundary = makePosition({ key: "at", total: 2, badCount: 1, badShare: 0.5, moveNo: 3 });
+    const afterBoundary = makePosition({ key: "after", total: 2, badCount: 1, badShare: 0.5, moveNo: 4 });
+    const out = CMT.filterDrillPositions([atBoundary, afterBoundary], { skipFirst: 3 });
+    assert.deepStrictEqual(out.map((p) => p.key), ["after"]);
+  });
+
+  test("filterDrillPositions: normalizes options and skips malformed positions", () => {
+    const numericStrings = makePosition({
+      key: "strings", total: "3", badCount: "1", badShare: "0.5", moveNo: "4",
+    });
+    const malformed = [
+      null,
+      makePosition({ key: "", total: 3, badCount: 1, badShare: 0.5, moveNo: 4 }),
+      makePosition({ key: "bad-total", total: "many", badCount: 1, badShare: 0.5, moveNo: 4 }),
+      makePosition({ key: "bad-count", total: 3, badCount: "some", badShare: 0.5, moveNo: 4 }),
+      makePosition({ key: "bad-share", total: 3, badCount: 1, badShare: "often", moveNo: 4 }),
+      makePosition({ key: "bad-move", total: 3, badCount: 1, badShare: 0.5, moveNo: "late" }),
+    ];
+
+    assert.deepStrictEqual(
+      CMT.filterDrillPositions([numericStrings, ...malformed], {
+        minOccurrences: "2.1",
+        minMistakeShare: "0.5",
+        skipFirst: "3.9",
+      }).map((p) => p.key),
+      ["strings"],
+      "numeric strings normalize; count rounds up and skipped moves round down"
+    );
+    assert.deepStrictEqual(
+      CMT.filterDrillPositions([numericStrings], {
+        minOccurrences: -10,
+        minMistakeShare: -4,
+        skipFirst: -2,
+      }).map((p) => p.key),
+      ["strings"],
+      "negative options clamp to their minimums"
+    );
+    assert.deepStrictEqual(
+      CMT.filterDrillPositions([numericStrings], {
+        minOccurrences: "invalid",
+        minMistakeShare: NaN,
+        skipFirst: Infinity,
+      }).map((p) => p.key),
+      ["strings"],
+      "non-finite options fall back to defaults"
+    );
+    assert.deepStrictEqual(CMT.filterDrillPositions(null, null), []);
+  });
+
+  test("shuffleCopy: empty and single-item inputs return new arrays without RNG calls", () => {
+    let calls = 0;
+    const rng = () => { calls++; return 0.5; };
+    const empty = [];
+    const one = [{ key: "only" }];
+    const shuffledEmpty = CMT.shuffleCopy(empty, rng);
+    const shuffledOne = CMT.shuffleCopy(one, rng);
+    assert.deepStrictEqual(shuffledEmpty, []);
+    assert.notStrictEqual(shuffledEmpty, empty);
+    assert.deepStrictEqual(shuffledOne, one);
+    assert.notStrictEqual(shuffledOne, one);
+    assert.strictEqual(calls, 0);
+    assert.deepStrictEqual(CMT.shuffleCopy(null, rng), []);
+  });
+
+  test("shuffleCopy: deterministic Fisher-Yates permutation does not mutate input", () => {
+    const items = Object.freeze(["a", "b", "c", "d"]);
+    const sequence = () => {
+      const samples = [0.1, 0.8, 0.3];
+      let i = 0;
+      return () => samples[i++];
+    };
+    const first = CMT.shuffleCopy(items, sequence());
+    const second = CMT.shuffleCopy(items, sequence());
+    assert.deepStrictEqual(first, ["b", "d", "c", "a"]);
+    assert.deepStrictEqual(second, first, "the same RNG sequence produces the same order");
+    assert.deepStrictEqual(items, ["a", "b", "c", "d"], "source order stays unchanged");
+    assert.deepStrictEqual(first.slice().sort(), items.slice().sort(), "output is a complete permutation");
+    assert.notStrictEqual(first, items);
+  });
+
   console.log("custom lines");
 
   test("parseLineToPairs: with and without move numbers, validates legality", () => {

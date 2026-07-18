@@ -30,6 +30,10 @@ Stockfish engine and the chess library from a CDN, and to fetch your games.
 5. Click a card to open it on the right: an interactive board set to that position.
    Make a move to see how it grades versus the engine, hit **Show best move** for an
    arrow, and see a table of every move you've historically tried there.
+6. Click **Shuffle drill** to practice a randomized round without repeats. Set the
+   minimum times a position must have appeared, the minimum mistake rate, and an
+   optional round size. The drill hides the move history and engine answer until you
+   make an attempt or reveal it.
 
 ## How a "mistake" is decided
 
@@ -114,7 +118,8 @@ inline contrast warning). Custom themes persist and are included in backups.
 Layout: desktop gets a position list rail beside a sticky trainer panel; on phones
 tapping a card opens a full-screen trainer with a bottom action bar (browser back
 closes it). The board supports tap-tap and drag. Keyboard: ↑/↓ browse positions,
-B shows the best move, R resets, Esc closes panels. All settings live in the gear
+B shows the best move, R resets, Esc closes panels; during a shuffled drill, N or ↓
+advances. All settings live in the gear
 drawer; analysis controls (player, days, Analyze) stay in the topbar.
 
 ## Architecture

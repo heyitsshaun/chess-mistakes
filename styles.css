@@ -120,6 +120,81 @@ html[data-base="dark"] .progressbar span { box-shadow: 0 0 8px var(--accent-soft
 .chip.check:has(input:checked) { color: var(--accent); border-color: var(--accent); }
 .chip.wide { width: 100%; justify-content: flex-start; padding: 8px 12px; color: var(--text); }
 
+.drill-launch {
+  display: flex; align-items: center; gap: 10px;
+}
+.drill-launch button { flex: 1; }
+.drill-eligible-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--surface-3);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.drill-setup {
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+  border-radius: var(--r-md);
+  box-shadow: 0 8px 24px var(--shadow-c);
+  padding: 14px;
+}
+.drill-setup[hidden] { display: none; }
+.drill-setup-head h2 { font-size: 15px; }
+.drill-setup-head p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 3px 0 0;
+}
+.drill-setup-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.drill-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.drill-field:last-child { grid-column: 1 / -1; }
+.drill-field input,
+.drill-field select {
+  min-width: 0;
+  width: 100%;
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--surface-3);
+  border-radius: var(--r-sm);
+  padding: 7px 8px;
+  font-size: 13px;
+}
+.drill-input-unit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+}
+.drill-input-unit > span { color: var(--faint); }
+.drill-pool-preview {
+  display: block;
+  min-height: 18px;
+  margin-top: 10px;
+  color: var(--accent);
+  font-size: 12px;
+}
+.drill-setup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .status { color: var(--muted); font-size: 12px; min-height: 16px; }
 
 /* -------------------------------- cards -------------------------------- */
@@ -248,6 +323,121 @@ table.hist td { padding: 6px 8px; border-top: 1px solid var(--surface-3); }
 table.hist .evalnum { font-variant-numeric: tabular-nums; color: var(--muted); }
 .igbtn { font-size: 11px; padding: 2px 9px; }
 
+/* ---------------------------- shuffled drill --------------------------- */
+.drill-shell {
+  width: min(920px, 100%);
+  min-height: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.drill-header {
+  width: min(640px, 100%);
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+.drill-header-copy { min-width: 0; }
+.drill-header h2 { font-size: 18px; }
+.drill-kicker {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+}
+.drill-position-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+.drill-progress {
+  width: min(640px, 100%);
+  margin: 0 auto;
+}
+.drill-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.drill-progress-track {
+  height: 6px;
+  overflow: hidden;
+  background: var(--surface-3);
+  border-radius: 999px;
+}
+.drill-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--dur-2) ease-out;
+}
+html[data-base="dark"] .drill-progress-fill { box-shadow: 0 0 8px var(--accent-soft); }
+body.drill-active .list-rail { display: none; }
+.drill-actions {
+  width: min(480px, 100%);
+  margin: 0 auto;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.drill-summary {
+  width: min(640px, 100%);
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+  border-radius: var(--r-lg);
+  box-shadow: 0 8px 24px var(--shadow-c);
+}
+.drill-summary h2 { font-size: 20px; }
+.drill-summary > p {
+  max-width: 440px;
+  margin: 6px auto 0;
+  color: var(--muted);
+}
+.drill-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 20px 0;
+}
+.drill-summary-stat {
+  padding: 12px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--surface-3);
+  border-radius: var(--r-sm);
+}
+.drill-summary-value {
+  display: block;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.drill-summary-label {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@media (min-width: 900px) {
+  body.drill-active .workspace { grid-template-columns: minmax(0, 1fr); }
+  body.drill-active .trainer { width: 100%; }
+}
+
 /* ------------------------------- drawer -------------------------------- */
 .scrim {
   position: fixed; inset: 0; background: rgba(0, 0, 0, .45); z-index: 40;
@@ -322,6 +512,8 @@ table.hist .evalnum { font-variant-numeric: tabular-nums; color: var(--muted); }
   .filters { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
   .chip { flex: 0 0 auto; }
   .card .chev { display: block; }
+  .drill-launch button,
+  .drill-setup-actions button { min-height: 44px; }
 
   .trainer {
     position: fixed; inset: 0; z-index: 30;
@@ -331,8 +523,10 @@ table.hist .evalnum { font-variant-numeric: tabular-nums; color: var(--muted); }
     padding: 12px;
     overflow-y: auto;
   }
-  body.trainer-open .trainer { transform: translateX(0); }
-  body.trainer-open { overflow: hidden; }
+  body.trainer-open .trainer,
+  body.drill-active .trainer { transform: translateX(0); }
+  body.trainer-open,
+  body.drill-active { overflow: hidden; }
   .detail-head { display: flex; align-items: center; gap: 10px; }
   .detail-head .backbtn { display: inline-flex; }
   .board { width: min(100%, 55vh); }
@@ -344,6 +538,19 @@ table.hist .evalnum { font-variant-numeric: tabular-nums; color: var(--muted); }
     margin-top: 14px;
   }
   .mobile-actions button { flex: 1; padding: 11px 0; }
+  .drill-shell { min-height: calc(100vh - 24px); }
+  .drill-header { align-items: flex-start; }
+  .drill-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    padding: 10px 0 4px;
+    background: var(--bg);
+    border-top: 1px solid var(--surface-3);
+  }
+  .drill-actions button { flex: 1; min-height: 44px; }
+  .drill-summary { padding: 20px 14px; }
+  .drill-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* -------------------------- reduced motion ----------------------------- */

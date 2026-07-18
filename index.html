@@ -50,6 +50,42 @@ try {
       <label class="chip check"><input type="checkbox" id="ignoreBook" checked /><span>ignore book</span></label>
       <label class="chip check"><input type="checkbox" id="showAll" /><span>show all</span></label>
     </div>
+    <div class="drill-launch">
+      <button id="openDrill" class="primary" type="button">Shuffle drill</button>
+      <span id="drillEligibleCount" class="drill-eligible-count" aria-live="polite">0 eligible</span>
+    </div>
+    <section id="drillSetup" class="drill-setup" role="dialog" aria-labelledby="drillSetupTitle" aria-describedby="drillSetupHint" hidden>
+      <div class="drill-setup-head">
+        <div>
+          <h2 id="drillSetupTitle">Build a shuffled drill</h2>
+          <p id="drillSetupHint">Choose which recurring mistake positions belong in this round.</p>
+        </div>
+      </div>
+      <div class="drill-setup-grid">
+        <label class="drill-field">
+          <span>Seen at least</span>
+          <span class="drill-input-unit"><input id="drillMinOcc" type="number" value="1" min="1" step="1" inputmode="numeric" /><span>times</span></span>
+        </label>
+        <label class="drill-field">
+          <span>Mistake rate at least</span>
+          <span class="drill-input-unit"><input id="drillMinRate" type="number" value="50" min="0" max="100" step="5" inputmode="numeric" /><span>%</span></span>
+        </label>
+        <label class="drill-field">
+          <span>Positions this round</span>
+          <select id="drillLimit">
+            <option value="all">All</option>
+            <option value="10">10</option>
+            <option value="20">20</option>
+            <option value="50">50</option>
+          </select>
+        </label>
+      </div>
+      <output id="drillPoolPreview" class="drill-pool-preview" for="drillMinOcc drillMinRate drillLimit" aria-live="polite">No positions match yet.</output>
+      <div class="drill-setup-actions">
+        <button id="cancelDrillSetup" type="button">Cancel</button>
+        <button id="startDrill" class="primary" type="button">Start drill</button>
+      </div>
+    </section>
     <div id="status" class="status" role="status" aria-live="polite"></div>
     <div id="results" class="results">
       <div class="hero">
