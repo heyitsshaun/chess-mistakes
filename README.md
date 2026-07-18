@@ -1,9 +1,14 @@
 # Chess Mistake Trainer
 
-A single-page app that pulls your Chess.com games, analyzes every move you made with
-Stockfish, groups them by **unique position**, and surfaces the positions where you
-repeatedly go wrong — so you can spot patterns like *"in the Owen's Defense I play the
-wrong 7th move 80% of the time"* and drill them.
+A single-page app that pulls your Chess.com games and finds where they depart from
+your opening preparation. It has two modes, switchable in the top bar:
+
+- **Repertoire (default)** — compares every game to your opening courses (crawled
+  from Chessly or pasted by hand) and splits the results into games where **you left
+  your prep first** and games where **your opponent left it first** — then engine-
+  checks how you handled the moves right after their deviation.
+- **Engine (legacy)** — the original pipeline: grade every move with Stockfish,
+  group by unique position, surface the positions you repeatedly get wrong.
 
 Everything runs in your browser. No install, no server, no account. Games come from
 Chess.com's public API; the engine (Stockfish) runs locally via WebAssembly.
@@ -15,14 +20,40 @@ Open `index.html` in a browser (double-click it, or drag it into a tab). That's 
 An internet connection is needed the first time so the browser can download the
 Stockfish engine and the chess library from a CDN, and to fetch your games.
 
-## Use it
+## Repertoire mode (default)
+
+Five Chessly courses ship bundled (`courses-data.js`): Owen's Defense, The Gotham
+Dutch, The Gotham Gambit, The London System, The Trompowsky Attack. Manage them —
+and add your own via a Chessly crawl file or pasted lines — under **Settings →
+Repertoire courses**. See `REPERTOIRE_MODE.md` for the full guide and
+`chessly-import/TASK-SPEC.md` for how to crawl another course.
+
+1. Enter your **Chess.com username** and lookback, hit **Analyze**.
+2. Each game is walked against every course for the color you played until someone
+   leaves the tree:
+   - **I deviated** cards: the position where you went off-book, what the course
+     plays, what you played instead, and how often (correct pass-throughs count in
+     the denominator). No engine involved — the course is the answer key.
+   - **They deviated** cards: identical opponent deviations are grouped; your next
+     ~5 moves (configurable) are graded with Stockfish, so you can see whether their
+     "random" sidestep provokes the same bad reply from you every time.
+   - Games that stay inside the course to the end of its lines count as in-book.
+3. Filter the list with **All / I deviated / Opponent deviated**; click a card to
+   retry the position on the board (course move or engine-best as the answer).
+4. **Shuffle drill** works on both kinds: course-move drills for your deviations,
+   engine-best drills for the flagged post-deviation replies.
+
+A ⚠ *multi* tag means the position exists in more than one of your courses; the
+card names one of them.
+
+## Engine mode (legacy)
 
 1. Enter your **Chess.com username**.
 2. Set the **lookback** (default 90 days), **max games** (0 = unlimited — the lookback
    window still caps it), how far into each game to
    analyze (**analyze up to move #**, default 16 — openings/early middlegame), and the
    engine **depth** (default 12; higher = more accurate but slower).
-3. Click **Fetch & Analyze**. Progress shows live; hit **Stop** any time to view
+3. Click **Analyze**. Progress shows live; hit **Stop** any time to view
    partial results.
 4. The left column lists **problem positions**, worst/most-frequent first. Each card
    shows the opening, the move number, what you usually played and its grade, how often
@@ -35,7 +66,7 @@ Stockfish engine and the chess library from a CDN, and to fetch your games.
    optional round size. The drill hides the move history and engine answer until you
    make an attempt or reveal it.
 
-## How a "mistake" is decided
+## How a "mistake" is decided (Engine mode)
 
 Each of your moves is compared to Stockfish's best move in that position. The
 difference, in **centipawns lost**, is graded:
@@ -127,19 +158,25 @@ drawer; analysis controls (player, days, Analyze) stay in the topbar.
 The app is split so the UI can be overhauled without touching (or breaking) the logic:
 
 - `core.js` — **all logic, zero DOM.** Fetching, PGN parsing, the Stockfish engine
-  wrapper, move grading, position aggregation, book/custom-line exemptions, and
-  persistence. Exposed as `window.CMT` in the browser and via `module.exports` in
-  Node. The data model (Settings, UserMove, Position, Play) is documented at the top
-  of the file.
+  wrapper, move grading, position aggregation, book/custom-line exemptions, the
+  repertoire module (course management, game classification, deviation
+  aggregation), and persistence. Exposed as `window.CMT` in the browser and via
+  `module.exports` in Node. The data model (Settings, UserMove, Position, Play,
+  Course, RepResults) is documented at the top of the file.
+- `courses-data.js` — generated bundle of course trees (do not edit; regenerate
+  with `python3 chessly-import/build_courses_bundle.py` after adding crawls).
 - `themes.js` — theme engine: built-in + custom themes applied as CSS variables,
   system-preference mode, light/dark assignments, persistence and backup mirror.
 - `app.js` — **thin UI layer.** Reads settings from inputs, renders the list/board/
   detail panels, wires events. Everything it does goes through the `CMT` API.
 - `index.html` / `styles.css` — layout and styling.
-- `test/core.test.js` — test suite for the core (33 tests, no framework). Run with
-  `npm install` then `npm test`. **When changing the UI, a green test run means the
-  core still behaves** — the UI's only obligations are the CMT API and element IDs it
-  chooses itself.
+- `test/core.test.js` — test suite for the core (52 tests, no framework), and
+  `test/ui.smoke.js` — a jsdom smoke test that boots the whole app and exercises
+  the repertoire flow end-to-end. Run both with `npm install` then `npm test`.
+  **When changing the UI, a green test run means the core still behaves** — the
+  UI's only obligations are the CMT API and element IDs it chooses itself.
+- `chessly-import/` — tooling for crawling Chessly courses (crawler script, PGN
+  converter, bundle builder, task spec) plus the raw crawl files.
 
 Under-the-hood behavior worth knowing:
 

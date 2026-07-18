@@ -1,0 +1,106 @@
+[Event "The Gotham Gambit"]
+[Site "https://chessly.com/courses/840e407d-54cc-45e3-9f3e-bff84a26d66d"]
+[Date "2026.07.18"]
+[Round "?"]
+[White "The Gotham Gambit"]
+[Black "?"]
+[Result "*"]
+
+1. e4 e5 2. Nf3 Nf6 3. Bc4 ( 3. d3 Nc6
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) ( 3. d4
+exd4 4. e5 ( 4. Nxd4 Nxe4 5. Qe2 Qe7 6. Nf5 Qe6 7. Nd4 Qd5 8. c3 ( 8. Nb5 Kd8
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) 8... Be7
+9. f3 ( 9. Nb5 Na6
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) 9... Nd6
+10. Bf4 O-O
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) ( 4.
+Qxd4 Nc6 5. Qe3 Bb4+ 6. c3 Ba5
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) 4... Ne4
+5. Qxd4 d5 6. exd6 Nxd6 7. Nc3 Nc6 8. Qf4 g6
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) ( 3. Nc3
+Bb4 4. Bc4 ( 4. d3 d5 5. exd5 Nxd5 6. Bd2 Nc6
+{ Chapter 5: Alts to 3.Nxe5 / Study 1: White Plays 3.Nc3 } ) ( 4. Nxe5 O-O 5.
+Bc4 ( 5. d3 d5 { Chapter 5: Alts to 3.Nxe5 / Study 1: White Plays 3.Nc3 } ) (
+5. Nd3 Bxc3 6. dxc3 Nxe4 7. Be2 Re8 8. O-O d6 9. Bf3 Bf5 10. Re1 Nc6
+{ Chapter 5: Alts to 3.Nxe5 / Study 1: White Plays 3.Nc3 } ) 5... d6 6. Nf3
+Nxe4 7. Nxe4 d5 { Chapter 5: Alts to 3.Nxe5 / Study 1: White Plays 3.Nc3 } )
+4... d6 5. d3 h6 { Chapter 5: Alts to 3.Nxe5 / Study 1: White Plays 3.Nc3 } ) (
+3. Nxe5 d5 4. d3 ( 4. d4 Nxe4 5. Bd3 Nd7 6. Nxd7 ( 6. Nxf7 Kxf7 7. Qh5+ Ke6
+{ Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) ( 6. O-O Nxe5 7. dxe5
+Nc5 8. Be2 c6 { Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) 6...
+Bxd7 7. O-O Qh4 8. c4 ( 8. g3 Qf6
+{ Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) 8... O-O-O
+{ Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) ( 4. exd5 Qxd5 5. d4 (
+5. f4 Bc5 6. Nc3 Qd4 7. Qe2 O-O
+{ Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) ( 5. Nc4 Be6 6. Nc3 (
+6. Ne3 Qd7 { Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) 6... Qd4
+{ Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) ( 5. Nd3 Nc6 6. Nc3
+Qa5 7. Be2 Nd4 8. O-O Bf5
+{ Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) ( 5. Nf3 Nc6 6. Be2 (
+6. Nc3 Qh5 7. Bb5 ( 7. Be2 Bg4 8. d3 ( 8. h3 O-O-O 9. d3 Bd6 10. Be3 Rhe8 11.
+Qd2 Bb4 12. O-O-O Qa5 13. hxg4 Nd5 14. Rh5 Bxc3 15. Qxc3 Nxc3 16. Rxa5 Nxd1
+{ Chapter 1: White Plays 5.Nf3 / Study 2: White Plays 8.h3 or d3 } ) ( 8. O-O
+Bd6 9. g3 ( 9. h3 O-O-O 10. d3 ( 10. d4 Bxh3 11. gxh3 ( 11. Ne5 Qh4
+{ Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) 11... Qxh3
+{ Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) ( 10. hxg4 Nxg4
+11. g3 Qh3 { Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) (
+10. Nh2 Bxe2 11. Nxe2 ( 11. Qxe2 Nd4
+{ Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) 11... Rhe8
+{ Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) 10... Bxh3 11.
+gxh3 Qxh3 12. Bg5 Ng4
+{ Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) 9... O-O-O 10.
+d3 Rhe8 11. Be3 g5 12. Nxg5 ( 12. Re1 Bf4 13. gxf4 gxf4 14. Bxf4 Rxe2
+{ Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) 12... Rxe3 13.
+fxe3 Qxg5 { Chapter 1: White Plays 5.Nf3 / Study 1: White Plays 8.0-0 } ) 8...
+O-O-O 9. Be3 Bb4 10. a3 Bxc3+ 11. bxc3 Nd5
+{ Chapter 1: White Plays 5.Nf3 / Study 2: White Plays 8.h3 or d3 } ) 7... Bg4
+8. Bxc6+ bxc6 9. d3 Bd6
+{ Chapter 1: White Plays 5.Nf3 / Study 2: White Plays 8.h3 or d3 } ) 6... Bg4
+7. O-O O-O-O { Chapter 1: White Plays 5.Nf3 / Study 2: White Plays 8.h3 or d3 }
+) ( 5. Qe2 Be7 6. c4 ( 6. Nc3 Qd8 7. b3 ( 7. d3 O-O
+{ Chapter 3: White Plays 5.Qe2 / Study 1: All Lines } ) ( 7. d4 Qxd4 8. Nb5 Qd8
+9. Bf4 c6 10. Nxc6 Nxc6 11. Nc7+ Kf8 12. Nxa8 Bf5
+{ Chapter 3: White Plays 5.Qe2 / Study 1: All Lines } ) ( 7. g3 O-O 8. Bg2 Re8
+9. O-O Bc5 { Chapter 3: White Plays 5.Qe2 / Study 1: All Lines } ) 7... O-O 8.
+Bb2 Nc6 9. Nxc6 bxc6 10. O-O-O a5
+{ Chapter 3: White Plays 5.Qe2 / Study 1: All Lines } ) ( 6. Qb5+ Nbd7 7. Qxd5
+Nxd5 8. Nxd7 Bxd7 { Chapter 3: White Plays 5.Qe2 / Study 1: All Lines } ) 6...
+Qa5 7. Nc3 O-O 8. d4 Bb4 9. Bd2 Re8
+{ Chapter 3: White Plays 5.Qe2 / Study 1: All Lines } ) 5... Nc6 6. Bc4 ( 6.
+Nc3 Bb4 { Chapter 2: White Plays 5.d4 / Study 1: White Plays 6.Nxc6 and 7.Nc3 }
+) ( 6. Nxc6 Qxc6 7. Be3 ( 7. c3 Bd6
+{ Chapter 2: White Plays 5.d4 / Study 2: White plays 7.c4, 7.c3, 7.Be3 or 7.Qe2 }
+) ( 7. c4 Bb4+ 8. Bd2 ( 8. Nc3 O-O 9. d5 Re8+ 10. Be2 ( 10. Be3 Qd6 11. Be2 Ne4
+12. Rc1 Bf5 13. O-O Nxc3 14. bxc3 Ba3
+{ Chapter 2: White Plays 5.d4 / Study 2: White plays 7.c4, 7.c3, 7.Be3 or 7.Qe2 }
+) 10... Bxc3+ 11. bxc3 Qxc4
+{ Chapter 2: White Plays 5.d4 / Study 2: White plays 7.c4, 7.c3, 7.Be3 or 7.Qe2 }
+) 8... O-O 9. Bxb4 Re8+ 10. Be2 ( 10. Kd2 Ne4+
+{ Chapter 2: White Plays 5.d4 / Study 2: White plays 7.c4, 7.c3, 7.Be3 or 7.Qe2 }
+) 10... Qxg2 11. Rf1 Bg4 12. Nc3 Rxe2+ 13. Nxe2 Re8
+{ Chapter 2: White Plays 5.d4 / Study 2: White plays 7.c4, 7.c3, 7.Be3 or 7.Qe2 }
+) ( 7. Nc3 Bb4 8. Bd2 ( 8. Qe2+ Ne4 9. Bd2 Bxc3 10. Bxc3 O-O 11. Qc4 Qf6
+{ Chapter 2: White Plays 5.d4 / Study 1: White Plays 6.Nxc6 and 7.Nc3 } ) 8...
+O-O 9. Be2 ( 9. Qf3 Re8+ 10. Be2 Bxc3 11. Bxc3 Bg4 12. Qxc6 Rxe2+
+{ Chapter 2: White Plays 5.d4 / Study 1: White Plays 6.Nxc6 and 7.Nc3 } ) 9...
+Qxg2 10. Bf3 Qh3 11. Qe2 Re8 12. Be3 Bg4
+{ Chapter 2: White Plays 5.d4 / Study 1: White Plays 6.Nxc6 and 7.Nc3 } ) ( 7.
+Qe2+ Kd8 8. Nc3 Bb4 9. Qc4 Re8+ 10. Be3 Nd5 11. Qxc6 bxc6 12. Kd2 Be6 13. a3
+Bxc3+ 14. bxc3 Nb6
+{ Chapter 2: White Plays 5.d4 / Study 2: White plays 7.c4, 7.c3, 7.Be3 or 7.Qe2 }
+) 7... Bf5 8. Nc3 Bb4
+{ Chapter 2: White Plays 5.d4 / Study 2: White plays 7.c4, 7.c3, 7.Be3 or 7.Qe2 }
+) 6... Qxg2 7. Bxf7+ ( 7. Rf1 Nxe5 8. dxe5 Ng4 9. Bg5 Be6
+{ Chapter 2: White Plays 5.d4 / Study 1: White Plays 6.Nxc6 and 7.Nc3 } ) 7...
+Ke7 8. Rf1 Nxe5 9. dxe5 Kxf7 10. exf6 Bg4
+{ Chapter 2: White Plays 5.d4 / Study 1: White Plays 6.Nxc6 and 7.Nc3 } ) ( 4.
+Nc3 d4 5. Ne2 Nxe4 { Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } )
+4... Bd6 5. Nf3 dxe4 6. dxe4 Nxe4 7. Bd3 Nc5
+{ Chapter 4: Move 4/5 Sidelines / Study 1: All Lines } ) 3... Nxe4 4. Nxe5 ( 4.
+O-O d5 5. Bb3 Nc6 6. Re1 Bc5 7. d4 Nxd4
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) ( 4. Qe2
+d5 { Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } ) 4...
+d5 5. Bb3 Qg5
+{ Chapter 5: Alts to 3.Nxe5 / Study 2: White Plays 3.Bc4 or others } *
+
+

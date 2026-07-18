@@ -1,5 +1,11 @@
 # Comparison Mode: Custom Opening Line Analysis
 
+> **SUPERSEDED (July 2026).** This feature was removed and replaced by
+> **Repertoire mode** — see `REPERTOIRE_MODE.md`. Repertoire mode compares
+> whole games against full course trees (not single lines), splits results
+> into "I deviated first" vs "opponent deviated first", and drives the drill
+> system. This document is kept for historical reference only.
+
 ## Overview
 Comparison mode lets you load your prepared opening lines and automatically track how your actual games compare to those lines. During analysis, the system flags positions where you deviate from your repertoire and shows you statistics on your consistency.
 

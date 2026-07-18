@@ -21,6 +21,10 @@ try {
 
 <header class="topbar">
   <div class="brand">♞ <span>Mistake trainer</span></div>
+  <div class="mode-toggle" role="group" aria-label="Analysis mode">
+    <button id="modeRep" type="button" class="active" title="Compare games to your opening courses">Repertoire</button>
+    <button id="modeLegacy" type="button" title="Legacy: grade every move with the engine">Engine</button>
+  </div>
   <label class="tb-field">
     <span>Player</span>
     <input id="username" type="text" value="" placeholder="chess.com username" spellcheck="false" autocomplete="off" />
@@ -40,6 +44,11 @@ try {
 <main class="workspace">
   <section class="list-rail" id="listRail">
     <div class="filters">
+      <select id="devFilter" aria-label="Deviation filter" class="rep-only">
+        <option value="all">All deviations</option>
+        <option value="user">I deviated</option>
+        <option value="opp">Opponent deviated</option>
+      </select>
       <select id="sortBy" aria-label="Sort positions">
         <option value="occ">Most frequent</option>
         <option value="badshare">Worst rate</option>
@@ -47,7 +56,7 @@ try {
         <option value="move">Earliest move</option>
       </select>
       <label class="chip"><span>skip first</span><input id="hideBefore" type="number" value="0" min="0" max="40" /><span>moves</span></label>
-      <label class="chip check"><input type="checkbox" id="ignoreBook" checked /><span>ignore book</span></label>
+      <label class="chip check legacy-only"><input type="checkbox" id="ignoreBook" checked /><span>ignore book</span></label>
       <label class="chip check"><input type="checkbox" id="showAll" /><span>show all</span></label>
     </div>
     <div class="drill-launch">
@@ -90,8 +99,8 @@ try {
     <div id="results" class="results">
       <div class="hero">
         <div class="hero-board" aria-hidden="true"></div>
-        <h2>Find the moves you keep getting wrong</h2>
-        <p>Pull your games, grade every move with Stockfish, and drill the positions where you go wrong most often.</p>
+        <h2>Find where your games leave your prep</h2>
+        <p>Pull your games and compare them to your opening courses: see where you break from your lines first, and how you respond when opponents do.</p>
         <button id="heroRun" class="primary big">Analyze my games</button>
       </div>
     </div>
@@ -142,8 +151,8 @@ try {
   </details>
 
   <details>
-    <summary>Opening book</summary>
-    <p class="hint">Established theory (via the Lichess opening explorer) is exempt from flagging while "ignore book" is on.</p>
+    <summary>Opening book (Engine mode)</summary>
+    <p class="hint">Engine mode only: established theory (via the Lichess opening explorer) is exempt from flagging while "ignore book" is on.</p>
     <div class="set-grid">
       <label>Check book through move<input id="bookMax" type="number" value="12" min="0" max="30" /></label>
     </div>
@@ -159,22 +168,29 @@ try {
     <div id="customList" class="customlist"></div>
   </details>
 
-  <details>
-    <summary>Comparison mode: study custom openings</summary>
-    <p class="hint">Load opening lines you're studying. During analysis, track which positions you deviate from your prepared lines and see statistics on your consistency.</p>
-    <div class="linerow">
-      <button id="openComparison" type="button" class="primary">Add comparison line</button>
+  <details open>
+    <summary>Repertoire courses</summary>
+    <p class="hint">The courses your games are compared against in Repertoire mode. Courses crawled from Chessly ship with the app; add more by importing a crawl file or pasting lines.</p>
+    <div class="set-grid">
+      <label>Moves analyzed after opponent deviates<input id="windowSize" type="number" value="5" min="1" max="15" /></label>
     </div>
-    <div id="comparisonImport" class="comparison-import" hidden>
-      <input id="comparisonLineLabel" type="text" placeholder="Line name (e.g., Najdorf 6.Bg5)" spellcheck="false" />
-      <textarea id="comparisonLineInput" placeholder="Paste PGN or moves (e.g., 1.e4 c5 2.Nf3 d6 3.d4 cxd4...)" spellcheck="false" style="min-height: 80px; font-family: monospace; font-size: 12px;"></textarea>
-      <div class="btnrow">
-        <button id="addComparisonLine" type="button" class="primary">Add line</button>
-        <button id="closeComparisonImport" type="button">Cancel</button>
+    <div id="courseList" class="customlist"></div>
+    <div class="btnrow wrap">
+      <label class="filebtn">Import Chessly crawl<input id="courseFile" type="file" accept=".json" hidden multiple /></label>
+      <button id="restoreCourses" type="button" hidden>Restore removed courses</button>
+    </div>
+    <div class="course-lines">
+      <p class="hint">Or paste lines (one per row, or a PGN). Both sides' moves become part of the course tree.</p>
+      <input id="courseLineName" type="text" placeholder="Course name (e.g. My anti-Sicilian)" spellcheck="false" />
+      <div class="linerow">
+        <select id="courseLineColor" aria-label="Course color">
+          <option value="w">I play White</option>
+          <option value="b">I play Black</option>
+        </select>
+        <button id="addCourseLines" type="button" class="primary">Add course</button>
       </div>
+      <textarea id="courseLineInput" placeholder="1. e4 c5 2. Nc3 Nc6 3. Bb5&#10;1. e4 e5 2. Nf3 Nc6 3. Bb5" spellcheck="false"></textarea>
     </div>
-    <div id="comparisonPanel" class="comparison-panel"></div>
-    <div id="comparisonDeviations" class="comparison-deviations"></div>
   </details>
 
   <details>
@@ -213,6 +229,7 @@ try {
 </aside>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+<script src="courses-data.js"></script>
 <script src="core.js"></script>
 <script src="themes.js"></script>
 <script src="app.js"></script>

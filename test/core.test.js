@@ -530,6 +530,213 @@ function fakeEngine(cpTable, bestTable) {
     assert.strictEqual(grid[4][4], null);
   });
 
+  console.log("repertoire");
+
+  // Tiny two-course fixture. "wcourse": as White play 1.d4; against 1...d5
+  // play 2.Bf4, against 1...Nf6 play 2.Bg5. "wcourse2" overlaps on 1.d4 d5
+  // (multi-course positions) but then plays 2.c4.
+  function fenAfter(sans) {
+    const c = new (require("chess.js").Chess)();
+    for (const s of sans) c.move(s, { sloppy: true });
+    return c.fen();
+  }
+  function mkCourse(id, color, lines) {
+    // lines: array of SAN arrays; every position→move along each line.
+    const positions = {};
+    for (const line of lines) {
+      const c = new (require("chess.js").Chess)();
+      for (const san of line) {
+        const key = CMT.posKey(c.fen());
+        const mv = c.move(san, { sloppy: true });
+        const node = positions[key] || (positions[key] = { moves: [], studies: [] });
+        const uci = mv.from + mv.to + (mv.promotion || "");
+        if (!node.moves.some((m) => m.uci === uci)) node.moves.push({ san: mv.san, uci });
+      }
+      positions[CMT.posKey(c.fen())] = positions[CMT.posKey(c.fen())] || { moves: [], studies: [] };
+    }
+    return { id, name: id, shortName: id, color, chapters: [], studies: {}, positions };
+  }
+  const WCOURSE = mkCourse("wcourse", "w", [
+    ["d4", "d5", "Bf4", "Nf6", "e3"],
+    ["d4", "Nf6", "Bg5", "e6", "e4"],
+  ]);
+  const WCOURSE2 = mkCourse("wcourse2", "w", [["d4", "d5", "c4"]]);
+  const REP = { w: CMT.buildRepertoire([WCOURSE, WCOURSE2], "w"), b: CMT.buildRepertoire([WCOURSE, WCOURSE2], "b") };
+
+  function mkGame(sans, opts) {
+    opts = opts || {};
+    const moves = sans.map((s, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${s}` : s)).join(" ");
+    return {
+      pgn: `[Event "Live Chess"]\n[White "${opts.white || "tester"}"]\n[Black "${opts.black || "opp"}"]\n\n${moves} *`,
+      rules: "chess", url: "https://example.com/g1",
+      white: { username: opts.white || "tester" }, black: { username: opts.black || "opp" },
+    };
+  }
+
+  test("classifyGame: I deviate first", () => {
+    const c = CMT.classifyGame(mkGame(["d4", "d5", "Nf3"]), "tester", REP, {});
+    assert.strictEqual(c.type, "user-dev");
+    assert.strictEqual(c.moveNo, 2);
+    assert.strictEqual(c.played.san, "Nf3");
+    const sans = c.expected.map((e) => e.san).sort();
+    assert.deepStrictEqual(sans, ["Bf4", "c4"]); // union of both courses
+    assert.deepStrictEqual(c.courseIds.sort(), ["wcourse", "wcourse2"]); // multi-course position
+    assert.strictEqual(c.passThroughs.length, 1); // 1.d4 was in book
+  });
+
+  test("classifyGame: opponent deviates first → window of my moves", () => {
+    const c = CMT.classifyGame(mkGame(["d4", "e5", "dxe5", "Nc6", "Nf3", "Qe7", "Bf4"]), "tester", REP, { windowSize: 2 });
+    assert.strictEqual(c.type, "opp-dev");
+    assert.strictEqual(c.theirMove.san, "e5");
+    assert.strictEqual(c.window.length, 2); // dxe5, Nf3 — my next two moves only
+    assert.deepStrictEqual(c.window.map((m) => m.san), ["dxe5", "Nf3"]);
+    assert.strictEqual(CMT.posKey(c.fen), c.posKey); // keyed on the position I face
+  });
+
+  test("classifyGame: window truncated by game end", () => {
+    const c = CMT.classifyGame(mkGame(["d4", "e5", "dxe5"]), "tester", REP, { windowSize: 5 });
+    assert.strictEqual(c.type, "opp-dev");
+    assert.strictEqual(c.window.length, 1);
+  });
+
+  test("classifyGame: book simply ends → book-end, not a deviation", () => {
+    // Full mainline then both sides continue: position after 5.e3 has no course moves.
+    const c = CMT.classifyGame(mkGame(["d4", "d5", "Bf4", "Nf6", "e3", "e6", "Nf3"]), "tester", REP, {});
+    assert.strictEqual(c.type, "book-end");
+  });
+
+  test("classifyGame: wrong color / unknown player → unmatched", () => {
+    const asBlack = CMT.classifyGame(mkGame(["e4", "e5"], { white: "opp", black: "tester" }), "tester", REP, {});
+    assert.strictEqual(asBlack.type, "unmatched"); // no black courses in fixture
+    const notMine = CMT.classifyGame(mkGame(["e4"], { white: "a", black: "b" }), "tester", REP, {});
+    assert.strictEqual(notMine.type, "unmatched");
+  });
+
+  test("classifyGame: transposition into book still matches (posKey lookup)", () => {
+    // 1.d4 Nf6 2.Bg5 e6 reached — in book regardless of path bookkeeping.
+    const c = CMT.classifyGame(mkGame(["d4", "Nf6", "Bg5", "e6", "e4", "h6"]), "tester", REP, {});
+    assert.strictEqual(c.type, "book-end"); // after 5.e4 course has no reply for h6? — e4 in book, h6 hits empty node
+  });
+
+  await atest("runRepertoireAnalysis aggregates both deviation kinds", async () => {
+    CMT.courseManager.bundled = [WCOURSE, WCOURSE2];
+    CMT.courseManager.imported = [];
+    CMT.courseManager.removedIds = [];
+    const games = [
+      mkGame(["d4", "d5", "Nf3"]),               // user-dev at move 2
+      mkGame(["d4", "d5", "Nf3"]),               // same again
+      mkGame(["d4", "d5", "Bf4", "Nf6", "e3"]),  // clean book pass-through
+      mkGame(["d4", "e5", "dxe5", "Nc6", "Nf3"]), // opp-dev, window dxe5+Nf3
+      mkGame(["d4", "e5", "dxe5", "Nc6", "Nf3"]), // identical opp deviation
+    ];
+    const s = Object.assign({}, SETTINGS, { windowSize: 2 });
+    const eng = fakeEngine({}, {});
+    const rep = await CMT.runRepertoireAnalysis(games, s, { getEngine: async () => eng });
+    assert.deepStrictEqual(rep.counts, { games: 5, userDev: 2, oppDev: 2, bookEnd: 1, unmatched: 0 });
+    assert.strictEqual(rep.userDev.length, 1);
+    const ud = rep.userDev[0];
+    assert.strictEqual(ud.devCount, undefined); // finalized shape
+    assert.strictEqual(ud.badCount, 2);
+    assert.strictEqual(ud.total, 3); // 2 deviations + 1 correct pass-through
+    assert.ok(Math.abs(ud.badShare - 2 / 3) < 1e-9);
+    assert.strictEqual(ud.multiCourse, true);
+    assert.strictEqual(rep.oppDev.length, 1);
+    const od = rep.oppDev[0];
+    assert.strictEqual(od.count, 2);
+    assert.strictEqual(od.theirMove.san, "e5");
+    assert.strictEqual(od.positions.length, 2); // dxe5 position + Nf3 position
+    assert.strictEqual(od.positions[0].total, 2); // both games graded
+    // flags: fake engine says everything is fine (cpl 0) → no window flags
+    CMT.recomputeRepertoireFlags(rep, s);
+    assert.strictEqual(rep.userDev[0].flagged, true);
+    assert.strictEqual(rep.oppDev[0].flagged, false);
+    // drill pool: only the user-dev position qualifies
+    const pool = CMT.repertoireDrillPool(rep, { minOccurrences: 1, minMistakeShare: 0.5 });
+    assert.strictEqual(pool.length, 1);
+    assert.strictEqual(pool[0].kind, "user-dev");
+    assert.deepStrictEqual(pool[0].answerUcis.sort(), ["c1f4", "c2c4"]);
+  });
+
+  await atest("runRepertoireAnalysis flags bad window moves", async () => {
+    CMT.courseManager.bundled = [WCOURSE];
+    CMT.courseManager.imported = [];
+    CMT.courseManager.removedIds = [];
+    const games = [mkGame(["d4", "e5", "Nh3"])]; // opp-dev; my reply Nh3 is bad
+    const cpTable = {};
+    cpTable[fenAfter(["d4", "e5"])] = 150;   // engine best from here wins 1.5
+    cpTable[fenAfter(["d4", "e5", "Nh3"])] = 120; // after Nh3, opp is +1.2 → I lost 270cp
+    const eng = fakeEngine(cpTable, {});
+    const s = Object.assign({}, SETTINGS, { windowSize: 3 });
+    const rep = await CMT.runRepertoireAnalysis(games, s, { getEngine: async () => eng });
+    CMT.recomputeRepertoireFlags(rep, s);
+    const od = rep.oppDev[0];
+    assert.strictEqual(od.positions.length, 1);
+    assert.ok(od.positions[0].plays[0].level >= 4); // mistake or worse
+    assert.strictEqual(od.positions[0].flagged, true);
+    assert.strictEqual(od.flagged, true);
+    const pool = CMT.repertoireDrillPool(rep, {});
+    assert.strictEqual(pool.length, 1);
+    assert.strictEqual(pool[0].kind, "opp-window");
+  });
+
+  test("courseFromChesslyRaw converts fens to posKeys and derives uci", () => {
+    const raw = {
+      course: { id: "cid", name: "Test Course", url: "" },
+      courseMeta: { color: "B", shortName: "TC" },
+      chapters: [{ id: "ch1", name: "Chapter 1" }],
+      studies: { s1: { name: "Study 1", chapterId: "ch1" } },
+      positions: {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1": { m: ["e4"], s: ["s1"] },
+        // old-style ep square that is NOT capturable → normalized to '-'
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1": { m: ["e6"], s: ["s1"] },
+      },
+    };
+    const course = CMT.courseFromChesslyRaw(raw);
+    assert.strictEqual(course.color, "b");
+    const keys = Object.keys(course.positions);
+    assert.ok(keys.every((k) => k.split(" ").length === 4)); // no counters
+    assert.ok(keys.some((k) => k.endsWith(" b KQkq -"))); // ep normalized away
+    const start = course.positions["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -"];
+    assert.deepStrictEqual(start.moves, [{ san: "e4", uci: "e2e4" }]);
+  });
+
+  test("courseFromLines builds a custom course from pasted lines", () => {
+    const course = CMT.courseFromLines("1. e4 e6 2. d4 b6\n1. d4 e6 2. e4 b6", "Owen tries", "b");
+    assert.strictEqual(course.color, "b");
+    assert.strictEqual(course.custom, true);
+    const startKey = CMT.posKey("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    const first = course.positions[startKey].moves.map((m) => m.san).sort();
+    assert.deepStrictEqual(first, ["d4", "e4"]);
+    assert.throws(() => CMT.courseFromLines("1. e4", "x", "z"));
+  });
+
+  test("course manager: remove/restore bundled, imported overrides", () => {
+    CMT.courseManager.bundled = [WCOURSE];
+    CMT.courseManager.imported = [];
+    CMT.courseManager.removedIds = [];
+    assert.strictEqual(CMT.activeCourses().length, 1);
+    CMT.removeCourse("wcourse");
+    assert.strictEqual(CMT.activeCourses().length, 0);
+    CMT.restoreRemovedCourses();
+    assert.strictEqual(CMT.activeCourses().length, 1);
+    CMT.importCourse(Object.assign({}, WCOURSE, { name: "override" }));
+    const active = CMT.activeCourses();
+    assert.strictEqual(active.length, 1);
+    assert.strictEqual(active[0].name, "override");
+  });
+
+  test("normalizeRepResults re-derives keys and drops malformed entries", () => {
+    const rep = {
+      userDev: [{ fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 5 9", plays: [] }, { plays: [] }],
+      oppDev: [{ fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", positions: [{ fen: "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1", plays: [] }, {}] }],
+    };
+    const out = CMT.normalizeRepResults(rep);
+    assert.strictEqual(out.userDev.length, 1);
+    assert.strictEqual(out.userDev[0].key.split(" ").length, 4);
+    assert.strictEqual(out.oppDev[0].positions.length, 1);
+    assert.strictEqual(CMT.normalizeRepResults(null), null);
+  });
+
   console.log("\n" + passed + " passed, " + failed + " failed");
   process.exit(failed ? 1 : 0);
 })();

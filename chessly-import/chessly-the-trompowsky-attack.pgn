@@ -1,0 +1,108 @@
+[Event "The Trompowsky Attack"]
+[Site "https://chessly.com/courses/26e0f48b-6780-4128-85d6-6d0be6e7b3cd"]
+[Date "2026.07.18"]
+[Round "?"]
+[White "The Trompowsky Attack"]
+[Black "?"]
+[Result "*"]
+
+1. d4 f5 ( 1... Nf6 2. Bg5 d5 ( 2... e6 3. e4 Be7 ( 3... h6 4. Bxf6 Qxf6 5. Nc3
+Bb4 ( 5... c5 6. e5 Qd8 7. d5 d6 8. Bb5+ Bd7 9. dxe6
+{ Chapter 1: The Big Center Variation / Study 2: Black Plays 2...e6 and 3...h6 }
+) ( 5... d6 6. Qd2 g6 7. O-O-O Bg7 8. f4 O-O 9. Nf3
+{ Chapter 1: The Big Center Variation / Study 2: Black Plays 2...e6 and 3...h6 }
+) 6. Qd3 Nc6 7. O-O-O O-O ( 7... Qxf2 8. Nf3 Bd6 9. e5
+{ Chapter 1: The Big Center Variation / Study 2: Black Plays 2...e6 and 3...h6 }
+) 8. g3
+{ Chapter 1: The Big Center Variation / Study 2: Black Plays 2...e6 and 3...h6 }
+) 4. e5 Nd5 ( 4... Ne4 5. Bxe7 Qxe7 6. c3 d5 7. Bd3 c5 8. Ne2 Nc6 9. f3
+{ Chapter 1: The Big Center Variation / Study 1: Black Plays 2...e6 and 3...Be7 }
+) 5. Bxe7 Nxe7 ( 5... Qxe7 6. c4 Nb6 ( 6... Qb4+ 7. Nd2 Nb6 8. Qc2 Nc6 9. Nf3
+O-O 10. Bd3
+{ Chapter 1: The Big Center Variation / Study 1: Black Plays 2...e6 and 3...Be7 }
+) 7. Bd3 c5 ( 7... d6 8. exd6 cxd6 9. Nf3 O-O 10. O-O
+{ Chapter 1: The Big Center Variation / Study 1: Black Plays 2...e6 and 3...Be7 }
+) 8. Qg4 O-O 9. Nf3 cxd4 10. Bxh7+
+{ Chapter 1: The Big Center Variation / Study 1: Black Plays 2...e6 and 3...Be7 }
+) 6. Bd3 d6 7. Qg4 O-O 8. Nc3 dxe5 9. dxe5 Nbc6 10. Nf3
+{ Chapter 1: The Big Center Variation / Study 1: Black Plays 2...e6 and 3...Be7 }
+) ( 2... g6 3. Bxf6 exf6 4. e3 Bg7 ( 4... d5 5. c4 dxc4 6. Bxc4 Bd6 7. Nf3 O-O
+8. O-O c6 9. Nc3
+{ Chapter 2: Black's Early Kingside Fianchetto / Study 1: Black Plays 2...g6 }
+) 5. c4 O-O 6. Nc3 c6 ( 6... d6 7. g3 f5 8. Bg2 Nd7 9. Nge2 Nf6 10. O-O
+{ Chapter 2: Black's Early Kingside Fianchetto / Study 1: Black Plays 2...g6 }
+) 7. g3 d5 8. cxd5 cxd5 9. Bg2 Be6 10. Nge2 Nc6 11. Nf4 Ne7 12. Qb3
+{ Chapter 2: Black's Early Kingside Fianchetto / Study 1: Black Plays 2...g6 }
+) ( 2... Ne4 3. h4 h6 ( 3... Nxg5 4. hxg5 e6 ( 4... g6 5. Nc3 Bg7 6. Qd2 c5 (
+6... d5 7. O-O-O Nc6 8. e3 Bf5 9. Bd3
+{ Chapter 3: The Raptor Variation / Study 1: The Raptor Main Line (3...Nxg5) }
+) 7. e3 cxd4 8. exd4 d5 9. Bb5+ Bd7 10. Bxd7+ Qxd7 11. O-O-O Nc6 12. Nf3
+{ Chapter 3: The Raptor Variation / Study 1: The Raptor Main Line (3...Nxg5) }
+) 5. Nf3 b6 ( 5... Be7 6. Qd2 d5 7. Nc3 c5 8. e4 dxe4 9. Nxe4 cxd4 10. O-O-O
+Nc6 11. Bb5 Bd7 12. Nxd4
+{ Chapter 3: The Raptor Variation / Study 1: The Raptor Main Line (3...Nxg5) }
+) ( 5... d5 6. Nc3 c5 7. e4 dxe4 8. Nxe4 cxd4 9. Qxd4
+{ Chapter 3: The Raptor Variation / Study 1: The Raptor Main Line (3...Nxg5) }
+) 6. Nc3 Bb7 7. Qd2 Bb4 8. a3
+{ Chapter 3: The Raptor Variation / Study 1: The Raptor Main Line (3...Nxg5) }
+) 4. Bf4 c5 ( 4... d5 5. e3 Bf5 ( 5... c5 6. Nd2 Nc6 7. Nxe4 dxe4 8. d5 Nb4 9.
+c3 Nxd5 10. Bb5+ Bd7 11. Qxd5 Bxb5 12. Qxb7
+{ Chapter 3: The Raptor Variation / Study 2: Black Plays 3...Ne4, 4...h6, and 5...d5 }
+) ( 5... e6 6. Nd2 Bd6 ( 6... Nxd2 7. Qxd2 Bd6 ( 7... c5 8. Nf3 Nc6 9. Ne5
+{ Chapter 3: The Raptor Variation / Study 2: Black Plays 3...Ne4, 4...h6, and 5...d5 }
+) 8. O-O-O Bxf4 9. exf4 O-O 10. g4
+{ Chapter 3: The Raptor Variation / Study 2: Black Plays 3...Ne4, 4...h6, and 5...d5 }
+) 7. Nxe4 Bxf4 8. Qg4 dxe4 9. Qxg7
+{ Chapter 3: The Raptor Variation / Study 2: Black Plays 3...Ne4, 4...h6, and 5...d5 }
+) 6. f3 Nf6 7. g4 Bh7 8. Nc3 e6 9. Qd2 Bd6 10. O-O-O
+{ Chapter 3: The Raptor Variation / Study 2: Black Plays 3...Ne4, 4...h6, and 5...d5 }
+) 5. d5 d6 ( 5... Qb6 6. Nd2 Nxd2 ( 6... Qxb2 7. Nxe4 Qb4+ 8. c3 Qxe4 9. e3
+{ Chapter 3: The Raptor Variation / Study 3: Black Plays 3...Ne4, 4...h6, and 5...c5 }
+) 7. Bxd2 Qxb2 8. Nf3 d6 9. e4 g6 10. Rb1
+{ Chapter 3: The Raptor Variation / Study 3: Black Plays 3...Ne4, 4...h6, and 5...c5 }
+) 6. Nd2 Nxd2 ( 6... Qa5 7. f3 Nxd2 8. Bxd2 Qb6 9. Bc3
+{ Chapter 3: The Raptor Variation / Study 3: Black Plays 3...Ne4, 4...h6, and 5...c5 }
+) 7. Qxd2 g6 8. e4 Bg7 9. c3 Nd7 10. Bd3
+{ Chapter 3: The Raptor Variation / Study 3: Black Plays 3...Ne4, 4...h6, and 5...c5 }
+) 3. Bxf6 exf6 ( 3... gxf6 4. e3 Bf5 ( 4... e5 5. Nf3 Bg4 ( 5... e4 6. Nfd2 c5
+( 6... f5 7. c4 c6 8. cxd5 cxd5 9. Nc3
+{ Chapter 4: Black Plays 2...d5 / Study 2: Black Plays 2...gxf6 } ) 7. dxc5
+Bxc5 8. Nb3 Bb6 9. Nc3 Be6 10. Qh5
+{ Chapter 4: Black Plays 2...d5 / Study 2: Black Plays 2...gxf6 } ) ( 5... Nc6
+6. c3 Bg4 7. Qa4
+{ Chapter 4: Black Plays 2...d5 / Study 2: Black Plays 2...gxf6 } ) 6. Be2 Nc6
+7. c3 Qd7 8. Nbd2 O-O-O 9. b4
+{ Chapter 4: Black Plays 2...d5 / Study 2: Black Plays 2...gxf6 } ) 5. c4 c6 (
+5... e6 6. cxd5 Qxd5 7. Nc3 Bb4 8. Ne2
+{ Chapter 4: Black Plays 2...d5 / Study 2: Black Plays 2...gxf6 } ) 6. Nc3 e6
+7. Bd3 { Chapter 4: Black Plays 2...d5 / Study 2: Black Plays 2...gxf6 } ) 4.
+e3 Bd6 ( 4... Be6 5. Nd2 Bd6 6. c4 c6 7. Ngf3 O-O 8. Bd3 Nd7 9. Qc2 g6 10. O-O
+{ Chapter 4: Black Plays 2...d5 / Study 1: Black Plays 3...exf6 } ) ( 4... c5
+5. Nf3 Nc6 6. Be2 cxd4 ( 6... Qb6 7. Nc3 Be6 8. O-O Qxb2 9. Nb5
+{ Chapter 4: Black Plays 2...d5 / Study 1: Black Plays 3...exf6 } ) 7. Nxd4 Qb6
+8. Nc3 Bb4 9. Qd3
+{ Chapter 4: Black Plays 2...d5 / Study 1: Black Plays 3...exf6 } ) 5. c4 c6 6.
+cxd5 cxd5 7. Nc3 Be6 8. g3 O-O 9. Bg2 Bb4 10. Ne2
+{ Chapter 4: Black Plays 2...d5 / Study 1: Black Plays 3...exf6 } ) 2. Bg5 c6 (
+2... d5 3. e3 Nf6 4. c4 e6 5. Nc3 c6 6. Nf3 Bd6 7. Bd3 O-O 8. O-O
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) (
+2... g6 3. Nc3 Bg7 4. h4 d5 ( 4... h6 5. Bf4 Nf6 6. Qd3
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) (
+4... Nf6 5. h5 Nxh5 6. Rxh5 gxh5 7. Nd5 Nc6 8. e3
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) 5.
+e3 c6 6. Nf3 Nf6 7. Bd3
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) (
+2... h6 3. Bh4 g5 4. Bg3 f4 ( 4... Nf6 5. e3 d6 6. h4 g4 ( 6... Rg8 7. hxg5
+hxg5 8. Nc3 e6 9. Qd2 Qe7 10. O-O-O Nc6 11. Bc4
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) 7.
+h5 Be6 8. Ne2 Bf7 9. Nf4 e5 10. dxe5 dxe5 11. Qxd8+ Kxd8 12. Ng6
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) 5.
+e3 { Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } )
+( 2... Nf6 3. Bxf6 exf6 ( 3... gxf6 4. e4
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) 4.
+e3 d5 5. c4 c6 6. Nc3 Bb4 7. Qb3 Bxc3+ 8. bxc3
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } ) 3.
+e3 Qb6 4. Nd2 Qxb2 5. Rb1 Qa3 6. Bd3
+{ Chapter 5: The Hopton Attack (2.Bg5) vs The Dutch / Study 1: All Lines } *
+
+

@@ -32,6 +32,20 @@
  * Eval (engine cache value, side-to-move perspective):
  *   { cp, mate, best }  stored under key `${depth}|${fen}`
  *   Book cache: { ucis } stored under key `book|${posKey}`
+ *
+ * REPERTOIRE MODE (the default mode; the engine pipeline above is "legacy")
+ * Course: { id, name, shortName, color:'w'|'b', url, custom?, chapters,
+ *   studies, positions: {posKey → {moves:[{san,uci}], studies:[id]}} }
+ * RepResults (from runRepertoireAnalysis):
+ *   userDev[]  — positions where YOU left the course first. Position-shaped
+ *     (key/fen/moveNo/color/total/badCount/badShare/plays/flagged) plus
+ *     kind:'user-dev', expected:[{uci,san}], answerUcis, courseName,
+ *     multiCourse. total = deviations + correct pass-throughs.
+ *   oppDev[]   — groups keyed by the position you face after the OPPONENT's
+ *     first off-book move. kind:'opp-dev', theirMove, expected (what the
+ *     course prepared for), count (games), positions[] = your next
+ *     `windowSize` moves engine-graded, each Position-shaped with
+ *     kind:'opp-window' and answerUcis=[engine best].
  */
 "use strict";
 
@@ -766,29 +780,37 @@
   }
 
   // ------------------------------ sessions / export ------------------------------
-  function saveSession(username, results) {
+  // extra: { rep?, mode? } — repertoire results and the active mode.
+  function saveSession(username, results, extra) {
+    extra = extra || {};
     return storage.set("sessions", "last", {
       savedAt: new Date().toISOString(), username, results,
+      rep: extra.rep || null, mode: extra.mode || null,
     });
   }
 
   async function loadSession() {
     const saved = await storage.get("sessions", "last");
-    if (!saved || !saved.results || !saved.results.length) return null;
-    saved.results = normalizeResults(saved.results);
+    if (!saved) return null;
+    saved.results = normalizeResults(saved.results || []);
+    saved.rep = normalizeRepResults(saved.rep);
+    if (!saved.results.length && !saved.rep) return null;
     return saved;
   }
 
-  async function buildExport(username, settings, results) {
+  async function buildExport(username, settings, results, extra) {
+    extra = extra || {};
     const evals = await storage.entries("evals");
     const themes = await storage.get("sessions", "themes"); // saved by the UI layer
     return {
       formatVersion: EXPORT_FORMAT_VERSION,
       savedAt: new Date().toISOString(),
       username, settings, results,
+      rep: extra.rep || null,
+      mode: extra.mode || null,
+      courses: { imported: courseManager.imported, removedIds: courseManager.removedIds },
       evals,
       customBook: customBook.groups,
-      comparisonLines: comparison.lines,
       themes: themes || null,
     };
   }
@@ -796,7 +818,11 @@
   // Apply an imported backup. Returns a summary for the UI to display.
   async function applyImport(data, engine) {
     const results = normalizeResults(data.results || data);
-    const summary = { positions: results.length, evals: 0, customGroups: 0, comparisonLines: 0, username: data.username || "" };
+    const rep = normalizeRepResults(data.rep);
+    const summary = {
+      positions: results.length, evals: 0, customGroups: 0, courses: 0,
+      rep: !!rep, mode: data.mode || null, username: data.username || "",
+    };
     if (data.evals && typeof data.evals === "object") {
       await storage.setMany("evals", data.evals);
       if (engine) for (const k in data.evals) engine.cache.set(k, data.evals[k]);
@@ -808,10 +834,11 @@
       await saveCustomBook();
       summary.customGroups = data.customBook.length;
     }
-    if (Array.isArray(data.comparisonLines) && data.comparisonLines.length) {
-      comparison.lines = data.comparisonLines;
-      await saveComparisonLines();
-      summary.comparisonLines = data.comparisonLines.length;
+    if (data.courses && typeof data.courses === "object") {
+      if (Array.isArray(data.courses.imported)) courseManager.imported = data.courses.imported;
+      if (Array.isArray(data.courses.removedIds)) courseManager.removedIds = data.courses.removedIds;
+      await saveCourses();
+      summary.courses = courseManager.imported.length;
     }
     if (data.themes && typeof data.themes === "object") {
       await storage.set("sessions", "themes", data.themes);
@@ -820,9 +847,9 @@
     await storage.set("sessions", "last", {
       savedAt: data.savedAt || new Date().toISOString(),
       username: summary.username,
-      results,
+      results, rep, mode: data.mode || null,
     });
-    return { results, summary };
+    return { results, rep, summary };
   }
 
   async function clearCaches(engine) {
@@ -830,6 +857,7 @@
     await storage.clear("evals");
     await storage.clear("sessions");
     await saveCustomBook(); // user's ignored lines survive a cache clear
+    await saveCourses();    // imported courses survive too
     if (engine) engine.cache.clear();
   }
 
@@ -863,180 +891,454 @@
     return grid;
   }
 
-  // ------------------------------ comparison mode ------------------------------
-  // Track user's game moves against prepared opening lines.
-  const comparison = {
-    lines: [],        // ComparisonLine[]
-    session: null,    // ComparisonSession (active)
-  };
+  // ------------------------------ repertoire mode ------------------------------
+  // Courses are opening trees (typically crawled from Chessly) mapping
+  // posKey → the moves the course plays/covers from that position, for BOTH
+  // sides: at your-color positions they're your repertoire moves; at
+  // opponent-color positions they're the replies the course prepares you for.
+  //
+  // Course: { id, name, shortName?, color: 'w'|'b', url?, custom?,
+  //           chapters: [{id, name}], studies: {id: {name, chapterId}},
+  //           positions: { posKey: { moves: [{san, uci}], studies: [id] } } }
+  //
+  // courseManager merges the bundled courses-data.js (window.CMT_COURSES,
+  // passed in by the UI) with user-imported ones persisted in IndexedDB.
+  const courseManager = { bundled: [], imported: [], removedIds: [] };
 
-  function importComparisonLine(pgnOrSan, lineLabel) {
-    const pairs = parseLineToPairs(pgnOrSan);
-    if (!pairs.length) throw new Error("no valid moves in line");
+  function setBundledCourses(list) {
+    courseManager.bundled = Array.isArray(list) ? list : [];
+  }
 
-    const uciMoves = pairs.map((p) => p.uci);
-    const positions = [];
-    const c = new ChessCtor();
+  function activeCourses() {
+    const removed = new Set(courseManager.removedIds);
+    const byId = new Map();
+    for (const c of courseManager.bundled) if (!removed.has(c.id)) byId.set(c.id, c);
+    for (const c of courseManager.imported) if (!removed.has(c.id)) byId.set(c.id, c);
+    return [...byId.values()];
+  }
 
-    for (let i = 0; i < uciMoves.length; i++) {
-      const mv = c.move({ from: uciMoves[i].slice(0, 2), to: uciMoves[i].slice(2, 4), promotion: uciMoves[i][4] });
-      if (mv) {
-        positions.push({
-          fen: c.fen(),
-          moveNo: Math.floor(i / 2) + 1,
-          posKey: posKey(c.fen()),
-          uci: uciMoves[i],
-          san: mv.san,
-        });
+  function saveCourses() {
+    return storage.set("sessions", "courses", {
+      imported: courseManager.imported, removedIds: courseManager.removedIds,
+    });
+  }
+
+  async function loadCourses() {
+    const saved = await storage.get("sessions", "courses");
+    if (saved) {
+      courseManager.imported = Array.isArray(saved.imported) ? saved.imported : [];
+      courseManager.removedIds = Array.isArray(saved.removedIds) ? saved.removedIds : [];
+    }
+    return activeCourses();
+  }
+
+  function removeCourse(id) {
+    if (courseManager.imported.some((c) => c.id === id)) {
+      courseManager.imported = courseManager.imported.filter((c) => c.id !== id);
+    } else if (!courseManager.removedIds.includes(id)) {
+      courseManager.removedIds.push(id);
+    }
+    return saveCourses();
+  }
+
+  function restoreRemovedCourses() {
+    courseManager.removedIds = [];
+    return saveCourses();
+  }
+
+  // Convert a raw Chessly crawl ({course, courseMeta, chapters, studies,
+  // positions: {fen: {m: [san], s: [studyId]}}}) into a Course. Mirrors
+  // chessly-import/build_courses_bundle.py so runtime imports match the bundle.
+  function courseFromChesslyRaw(data) {
+    if (!data || !data.positions || !data.course) throw new Error("not a Chessly crawl file");
+    const meta = data.courseMeta || {};
+    let color = (meta.color || "").toLowerCase();
+    if (color !== "w" && color !== "b") {
+      const tags = (meta.tags || []).join(" ");
+      color = /white/i.test(tags) ? "w" : /black/i.test(tags) ? "b" : null;
+    }
+    if (!color) throw new Error("cannot determine course color (courseMeta.color missing)");
+    const positions = {};
+    for (const fen in data.positions) {
+      const entry = data.positions[fen];
+      if (!entry || !Array.isArray(entry.m)) continue;
+      let c;
+      try { c = new ChessCtor(fen); } catch (e) { continue; }
+      const moves = [];
+      for (const san of entry.m) {
+        const mv = c.move(san, { sloppy: true });
+        if (!mv) continue;
+        moves.push({ san: mv.san, uci: mv.from + mv.to + (mv.promotion || "") });
+        c.undo();
+      }
+      const key = posKey(fen);
+      const node = positions[key];
+      if (node) { // transpositions differing only in move counters: merge
+        const known = new Set(node.moves.map((m) => m.uci));
+        for (const m of moves) if (!known.has(m.uci)) node.moves.push(m);
+        node.studies = [...new Set([...node.studies, ...(entry.s || [])])];
+      } else {
+        positions[key] = { moves, studies: entry.s || [] };
       }
     }
-
-    const line = {
-      id: "line-" + Date.now() + "-" + Math.random().toString(36).slice(2, 9),
-      name: lineLabel || pairs.map((p) => p.san).join(" "),
-      moves: pairs.map((p) => p.san),
-      uciMoves,
-      positions,
-      createdAt: Date.now(),
-      lastUsed: Date.now(),
-    };
-
-    comparison.lines.push(line);
-    saveComparisonLines();
-    return line;
-  }
-
-  function saveComparisonLines() {
-    return storage.set("sessions", "comparisonLines", { lines: comparison.lines });
-  }
-
-  async function loadComparisonLines() {
-    const saved = await storage.get("sessions", "comparisonLines");
-    if (saved && Array.isArray(saved.lines)) {
-      comparison.lines = saved.lines;
-    }
-    return comparison.lines;
-  }
-
-  function removeComparisonLine(lineId) {
-    comparison.lines = comparison.lines.filter((line) => line.id !== lineId);
-    if (comparison.session && comparison.session.activeLineId === lineId) {
-      comparison.session.activeLineId = comparison.lines[0]?.id || null;
-    }
-    saveComparisonLines();
-  }
-
-  function initComparisonSession(lineIds) {
-    const loadedLines = comparison.lines.filter((line) => lineIds.includes(line.id));
-    if (!loadedLines.length) throw new Error("no valid lines selected");
-
-    comparison.session = {
-      id: "session-" + Date.now(),
-      activeLineId: loadedLines[0].id,
-      loadedLines: loadedLines.map((l) => l.id),
-      currentMoveIndex: 0,
-      deviations: [],
-      stats: {
-        totalMoves: 0,
-        matchedMoves: 0,
-        deviationMoves: 0,
-        firstDeviationMove: null,
-        deviationsByPosition: {},
-      },
-    };
-    return comparison.session;
-  }
-
-  function getActiveComparisonLine() {
-    if (!comparison.session) return null;
-    return comparison.lines.find((l) => l.id === comparison.session.activeLineId);
-  }
-
-  function comparePosition(userUci, userSan, fenBefore) {
-    if (!comparison.session) return { isMatch: false };
-
-    const line = getActiveComparisonLine();
-    if (!line) return { isMatch: false };
-
-    const expectedUci = line.uciMoves[comparison.session.currentMoveIndex];
-    const isMatch = userUci === expectedUci;
-
-    if (!isMatch) {
-      const deviation = {
-        lineId: line.id,
-        posKey: posKey(fenBefore),
-        moveNo: Math.floor(comparison.session.currentMoveIndex / 2) + 1,
-        expectedUci,
-        expectedSan: line.moves[comparison.session.currentMoveIndex],
-        actualUci: userUci,
-        actualSan: userSan,
-        timestamp: Date.now(),
-      };
-      comparison.session.deviations.push(deviation);
-
-      // Track deviation by position for stats
-      const key = posKey(fenBefore);
-      if (!comparison.session.stats.deviationsByPosition[key]) {
-        comparison.session.stats.deviationsByPosition[key] = [];
-      }
-      comparison.session.stats.deviationsByPosition[key].push({
-        uci: userUci,
-        expected: expectedUci,
-      });
-
-      comparison.session.stats.deviationMoves++;
-      if (comparison.session.stats.firstDeviationMove === null) {
-        comparison.session.stats.firstDeviationMove = comparison.session.currentMoveIndex;
-      }
-
-      return { isMatch: false, deviation };
-    }
-
-    // Move matched — advance line
-    comparison.session.currentMoveIndex++;
-    comparison.session.stats.matchedMoves++;
-    comparison.session.stats.totalMoves++;
-    return { isMatch: true };
-  }
-
-  function resetComparisonSession() {
-    if (comparison.session) {
-      comparison.session.currentMoveIndex = 0;
-      comparison.session.deviations = [];
-      comparison.session.stats = {
-        totalMoves: 0,
-        matchedMoves: 0,
-        deviationMoves: 0,
-        firstDeviationMove: null,
-        deviationsByPosition: {},
-      };
-    }
-  }
-
-  function switchComparisonLine(lineId) {
-    if (comparison.session) {
-      comparison.session.activeLineId = lineId;
-      resetComparisonSession();
-    }
-  }
-
-  function getComparisonStats() {
-    if (!comparison.session) return null;
-    const s = comparison.session.stats;
-    const total = s.matchedMoves + s.deviationMoves;
     return {
-      totalMoves: total,
-      matchedMoves: s.matchedMoves,
-      deviationMoves: s.deviationMoves,
-      matchRate: total > 0 ? (s.matchedMoves / total * 100).toFixed(1) : 0,
-      deviations: comparison.session.deviations,
-      deviationsByPosition: s.deviationsByPosition,
-      firstDeviationMove: s.firstDeviationMove,
+      id: data.course.id, name: data.course.name,
+      shortName: meta.shortName || data.course.name,
+      color, url: data.course.url || "",
+      chapters: data.chapters || [], studies: data.studies || {},
+      positions,
     };
   }
 
-  function endComparisonSession() {
-    comparison.session = null;
+  // Build a Course from pasted SAN/PGN lines (one line per row, or a
+  // multi-game PGN). Every position→move along each line is included, both
+  // colors — same semantics as a crawled course.
+  function courseFromLines(text, name, color) {
+    if (color !== "w" && color !== "b") throw new Error("course color must be 'w' or 'b'");
+    const chunks = /\[Event /.test(text)
+      ? gamesFromPgnText(text).map((g) => g.pgn)
+      : text.split(/\n+/).map((t) => t.trim()).filter(Boolean);
+    if (!chunks.length) throw new Error("no lines found");
+    const positions = {};
+    for (const chunk of chunks) {
+      for (const p of parseLineToPairs(chunk)) {
+        const node = positions[p.key] || (positions[p.key] = { moves: [], studies: [] });
+        if (!node.moves.some((m) => m.uci === p.uci)) node.moves.push({ san: p.san, uci: p.uci });
+      }
+    }
+    return {
+      id: "custom-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+      name: name || "Custom lines", shortName: name || "Custom lines",
+      color, custom: true, chapters: [], studies: {}, positions,
+    };
+  }
+
+  function importCourse(course) {
+    courseManager.imported = courseManager.imported.filter((c) => c.id !== course.id);
+    courseManager.imported.push(course);
+    courseManager.removedIds = courseManager.removedIds.filter((id) => id !== course.id);
+    saveCourses();
+    return course;
+  }
+
+  // Merge all courses of one color into a single lookup:
+  //   posKey → { moves: Map(uci → {san, courseIds: Set}), courseIds: Set }
+  function buildRepertoire(courses, color) {
+    const map = new Map();
+    for (const c of courses) {
+      if (c.color !== color) continue;
+      for (const key in c.positions) {
+        let node = map.get(key);
+        if (!node) { node = { moves: new Map(), courseIds: new Set() }; map.set(key, node); }
+        node.courseIds.add(c.id);
+        for (const m of c.positions[key].moves) {
+          let mm = node.moves.get(m.uci);
+          if (!mm) { mm = { san: m.san, courseIds: new Set() }; node.moves.set(m.uci, mm); }
+          mm.courseIds.add(c.id);
+        }
+      }
+    }
+    return map;
+  }
+
+  // Walk one game against the repertoire for the user's color. Returns the
+  // first departure from the course tree:
+  //   {type:'user-dev'|'opp-dev'|'book-end'|'unmatched', ...}
+  // plus passThroughs: user-color positions traversed while still in book
+  // (used to compute "how often I get this right" denominators).
+  function classifyGame(game, username, repByColor, opts) {
+    opts = opts || {};
+    const windowSize = Math.max(1, opts.windowSize || 5);
+    const uname = (username || "").toLowerCase();
+    const white = ((game.white && game.white.username) || "").toLowerCase();
+    const black = ((game.black && game.black.username) || "").toLowerCase();
+    const userColor = white === uname ? "w" : black === uname ? "b" : null;
+    const passThroughs = [];
+    if (!userColor) return { type: "unmatched", reason: "player not in game", passThroughs };
+    const rep = repByColor[userColor];
+    if (!rep || !rep.size) return { type: "unmatched", reason: "no courses for this color", userColor, passThroughs };
+
+    const sans = parseMoves(game.pgn);
+    const chess = new ChessCtor();
+    const opening = openingName(game.pgn);
+    const url = game.url || "";
+    const base = { userColor, opening, url, passThroughs };
+
+    for (let i = 0; i < sans.length; i++) {
+      const fenBefore = chess.fen();
+      const key = posKey(fenBefore);
+      const turn = chess.turn();
+      const moveNo = Math.floor(i / 2) + 1;
+      const node = rep.get(key);
+      if (!node || !node.moves.size) {
+        return Object.assign({ type: "book-end", plies: i }, base); // prep ran out — no one deviated
+      }
+      let mv;
+      try { mv = chess.move(sans[i], { sloppy: true }); } catch (e) { mv = null; }
+      if (!mv) return Object.assign({ type: "unmatched", reason: "unparseable game" }, base);
+      const uci = mv.from + mv.to + (mv.promotion || "");
+      if (node.moves.has(uci)) {
+        if (turn === userColor) passThroughs.push({ key, moveNo });
+        continue;
+      }
+      const courseIds = [...node.courseIds];
+      const expected = [...node.moves].map(([u, m]) => ({ uci: u, san: m.san }));
+      if (turn === userColor) {
+        return Object.assign({
+          type: "user-dev", posKey: key, fen: fenBefore, moveNo,
+          played: { uci, san: mv.san }, expected, courseIds, plies: i,
+        }, base);
+      }
+      // Opponent deviated — collect my next `windowSize` moves.
+      const afterFen = chess.fen();
+      const window = [];
+      for (let j = i + 1; j < sans.length && window.length < windowSize; j++) {
+        const wTurn = chess.turn();
+        const wFen = chess.fen();
+        const wMoveNo = Math.floor(j / 2) + 1;
+        let wmv;
+        try { wmv = chess.move(sans[j], { sloppy: true }); } catch (e) { wmv = null; }
+        if (!wmv) break;
+        if (wTurn === userColor) {
+          window.push({
+            fenBefore: wFen, fenAfter: chess.fen(),
+            uci: wmv.from + wmv.to + (wmv.promotion || ""), san: wmv.san,
+            moveNo: wMoveNo, color: userColor, opening, url,
+            terminalAfter: chess.game_over(), matedAfter: chess.in_checkmate(),
+          });
+        }
+      }
+      return Object.assign({
+        type: "opp-dev", posKey: posKey(afterFen), fen: afterFen, prevFen: fenBefore, moveNo,
+        theirMove: { uci, san: mv.san }, expected, courseIds, window, plies: i,
+      }, base);
+    }
+    return Object.assign({ type: "book-end", plies: sans.length }, base);
+  }
+
+  // Analyze all games against the active courses. Engine is used ONLY to
+  // grade the post-deviation windows (deps.getEngine is called lazily, so no
+  // engine ever loads when every game is user-dev/book-end).
+  // deps: { getEngine?, onStatus?, onProgress?, control? }
+  async function runRepertoireAnalysis(games, s, deps) {
+    deps = deps || {};
+    const onStatus = deps.onStatus || noop;
+    const onProgress = deps.onProgress || noop;
+    const control = deps.control || {};
+    const courses = activeCourses();
+    if (!courses.length) throw new Error("No courses loaded. Add one under Settings → Repertoire courses.");
+    const repByColor = { w: buildRepertoire(courses, "w"), b: buildRepertoire(courses, "b") };
+    const courseName = (id) => { const c = courses.find((x) => x.id === id); return c ? (c.shortName || c.name) : id; };
+
+    const counts = { games: games.length, userDev: 0, oppDev: 0, bookEnd: 0, unmatched: 0 };
+    const passCounts = new Map();
+    const classified = [];
+    for (const g of games) {
+      const c = classifyGame(g, s.username, repByColor, { windowSize: s.windowSize });
+      classified.push(c);
+      counts[{ "user-dev": "userDev", "opp-dev": "oppDev", "book-end": "bookEnd", unmatched: "unmatched" }[c.type]]++;
+      for (const p of c.passThroughs) passCounts.set(p.key, (passCounts.get(p.key) || 0) + 1);
+    }
+    onStatus(`${games.length} games: ${counts.userDev} you deviated, ${counts.oppDev} opponent deviated, ` +
+      `${counts.bookEnd} in-book, ${counts.unmatched} unmatched.`);
+
+    // ---- aggregate: I deviated first ----
+    const userDevMap = new Map();
+    for (const c of classified) {
+      if (c.type !== "user-dev") continue;
+      let r = userDevMap.get(c.posKey);
+      if (!r) {
+        r = {
+          kind: "user-dev", key: c.posKey, fen: c.fen, moveNo: c.moveNo, color: c.userColor,
+          opening: c.opening, expected: c.expected, courseIds: c.courseIds,
+          plays: new Map(), devCount: 0, url: c.url,
+        };
+        userDevMap.set(c.posKey, r);
+      }
+      let p = r.plays.get(c.played.uci);
+      if (!p) { p = { uci: c.played.uci, san: c.played.san, count: 0 }; r.plays.set(c.played.uci, p); }
+      p.count++;
+      r.devCount++;
+    }
+    const userDev = [...userDevMap.values()].map((r) => {
+      const ph = phaseOf(r.moveNo, s.phases);
+      const total = r.devCount + (passCounts.get(r.key) || 0);
+      return {
+        kind: r.kind, key: r.key, fen: r.fen, moveNo: r.moveNo, color: r.color,
+        opening: r.opening, phase: ph.name, accept: ph.accept,
+        expected: r.expected, answerUcis: r.expected.map((e) => e.uci),
+        courseIds: r.courseIds, courseName: courseName(r.courseIds[0]),
+        multiCourse: r.courseIds.length > 1,
+        plays: [...r.plays.values()].sort((a, b) => b.count - a.count),
+        total, badCount: r.devCount, badShare: total ? r.devCount / total : 0,
+        avgCpl: 0, url: r.url, flagged: false,
+      };
+    });
+
+    // ---- aggregate: opponent deviated first ----
+    const oppDevMap = new Map();
+    for (const c of classified) {
+      if (c.type !== "opp-dev") continue;
+      let g = oppDevMap.get(c.posKey);
+      if (!g) {
+        g = {
+          kind: "opp-dev", key: c.posKey, fen: c.fen, prevFen: c.prevFen, moveNo: c.moveNo,
+          color: c.userColor, opening: c.opening, theirMove: c.theirMove, expected: c.expected,
+          courseIds: c.courseIds, count: 0, url: c.url, windowMoves: [], positions: new Map(),
+        };
+        oppDevMap.set(c.posKey, g);
+      }
+      g.count++;
+      for (const m of c.window) g.windowMoves.push(m);
+    }
+
+    // Engine pass over every window move (the only engine use in this mode).
+    const allWindow = [];
+    for (const g of oppDevMap.values()) for (const m of g.windowMoves) allWindow.push([g, m]);
+    if (allWindow.length && deps.getEngine) {
+      onStatus("Grading " + allWindow.length + " post-deviation moves with the engine…");
+      const engine = await deps.getEngine();
+      let done = 0, failures = 0;
+      for (const [g, m] of allWindow) {
+        if (control.stop) break;
+        let a;
+        try {
+          a = await analyzeMove(m, s.depth, s.th, engine);
+          failures = 0;
+        } catch (e) {
+          done++;
+          if (++failures >= ENGINE_MAX_CONSECUTIVE_FAILURES) {
+            throw new Error("Engine failing repeatedly (" + e.message + "); aborting. Partial results kept.");
+          }
+          continue;
+        }
+        const key = posKey(m.fenBefore);
+        let p = g.positions.get(key);
+        if (!p) {
+          p = {
+            kind: "opp-window", key, groupKey: g.key, fen: m.fenBefore, moveNo: m.moveNo,
+            color: m.color, opening: m.opening, best: a.best, bestEval: a.bestEval,
+            plays: new Map(), total: 0, cplSum: 0, url: m.url,
+          };
+          g.positions.set(key, p);
+        }
+        p.best = a.best; p.bestEval = a.bestEval;
+        let rec = p.plays.get(m.uci);
+        if (!rec) { rec = { uci: m.uci, san: m.san, count: 0, cplSum: 0, level: a.level }; p.plays.set(m.uci, rec); }
+        rec.count++; rec.cplSum += a.cpl; rec.level = a.level;
+        p.total++; p.cplSum += a.cpl;
+        done++;
+        if (done % 3 === 0 || done === allWindow.length) {
+          onProgress(done / allWindow.length);
+          onStatus("Grading post-deviation moves… " + done + "/" + allWindow.length);
+          await sleep(0);
+        }
+      }
+      await storage.flush();
+    }
+
+    const oppDev = [...oppDevMap.values()].map((g) => {
+      const ph = phaseOf(g.moveNo, s.phases);
+      const positions = [...g.positions.values()].map((p) => {
+        const pph = phaseOf(p.moveNo, s.phases);
+        return {
+          kind: p.kind, key: p.key, groupKey: p.groupKey, fen: p.fen, moveNo: p.moveNo,
+          color: p.color, opening: p.opening, best: p.best, bestEval: p.bestEval,
+          phase: pph.name, accept: pph.accept,
+          total: p.total, badCount: 0, badShare: 0,
+          avgCpl: p.total ? p.cplSum / p.total : 0,
+          plays: [...p.plays.values()].sort((a, b) => b.count - a.count),
+          flagged: false, url: p.url, answerUcis: p.best ? [p.best] : [],
+        };
+      }).sort((a, b) => a.moveNo - b.moveNo);
+      const moveTotal = positions.reduce((n, p) => n + p.total, 0);
+      const cplSum = positions.reduce((n, p) => n + p.plays.reduce((x, q) => x + q.cplSum, 0), 0);
+      return {
+        kind: g.kind, key: g.key, fen: g.fen, prevFen: g.prevFen, moveNo: g.moveNo,
+        color: g.color, opening: g.opening, phase: ph.name, accept: ph.accept,
+        theirMove: g.theirMove, expected: g.expected,
+        courseIds: g.courseIds, courseName: courseName(g.courseIds[0]),
+        multiCourse: g.courseIds.length > 1,
+        count: g.count, total: g.count, badCount: 0, badShare: 0,
+        avgCpl: moveTotal ? cplSum / moveTotal : 0,
+        positions, url: g.url, flagged: false,
+      };
+    });
+
+    return { userDev, oppDev, counts, savedAt: new Date().toISOString() };
+  }
+
+  // Re-derive flags for repertoire results — cheap, runs on every render so
+  // threshold changes apply instantly. customSet exempts (key|uci) pairs on
+  // graded window moves, same as legacy manual-ignore.
+  function recomputeRepertoireFlags(rep, s, customSet) {
+    if (!rep) return;
+    customSet = customSet || new Set();
+    for (const r of rep.userDev) {
+      r.flagged = r.total >= s.minOcc && r.badShare >= s.flagShare && r.badCount > 0;
+    }
+    for (const g of rep.oppDev) {
+      let groupBad = 0, groupTotal = 0;
+      for (const p of g.positions) {
+        const ph = phaseOf(p.moveNo, s.phases);
+        p.accept = ph.accept; p.phase = ph.name;
+        let bad = 0;
+        for (const q of p.plays) {
+          if (q.level > ph.accept && !customSet.has(p.key + "|" + q.uci)) bad += q.count;
+        }
+        p.badCount = bad;
+        p.badShare = p.total ? bad / p.total : 0;
+        p.flagged = p.badCount > 0;
+        groupBad += bad; groupTotal += p.total;
+      }
+      g.badCount = groupBad;
+      g.badShare = groupTotal ? groupBad / groupTotal : 0;
+      g.flagged = g.count >= s.minOcc && groupBad > 0;
+    }
+  }
+
+  // Flatten repertoire results into one sortable card list for the UI.
+  // filter: 'all' | 'user' | 'opp'
+  function repertoireItems(rep, filter) {
+    if (!rep) return [];
+    let items = [];
+    if (filter !== "opp") items = items.concat(rep.userDev);
+    if (filter !== "user") items = items.concat(rep.oppDev);
+    return items;
+  }
+
+  // Drill pool for repertoire mode: user-dev positions (answer = any course
+  // move) plus graded window positions where you erred (answer = engine best).
+  function repertoireDrillPool(rep, options) {
+    if (!rep) return [];
+    options = options || {};
+    const include = options.include || "all"; // 'all' | 'user' | 'opp'
+    let pool = [];
+    if (include !== "opp") {
+      pool = pool.concat(filterDrillPositions(rep.userDev, options).filter((r) => r.flagged));
+    }
+    if (include !== "user") {
+      const minShare = clamp(Number(options.minMistakeShare) || 0, 0, 1);
+      for (const g of rep.oppDev) {
+        if (g.count < Math.max(1, Math.ceil(options.minOccurrences || 1))) continue;
+        pool = pool.concat(g.positions.filter((p) =>
+          p.flagged && p.best && p.badShare >= minShare && p.moveNo > (options.skipFirst || 0)));
+      }
+    }
+    return pool;
+  }
+
+  function normalizeRepResults(rep) {
+    if (!rep || !Array.isArray(rep.userDev) || !Array.isArray(rep.oppDev)) return null;
+    rep.userDev = rep.userDev.filter((r) => r && r.fen && Array.isArray(r.plays));
+    for (const r of rep.userDev) r.key = posKey(r.fen);
+    rep.oppDev = rep.oppDev.filter((g) => g && g.fen && Array.isArray(g.positions));
+    for (const g of rep.oppDev) {
+      g.key = posKey(g.fen);
+      g.positions = g.positions.filter((p) => p && p.fen && Array.isArray(p.plays));
+      for (const p of g.positions) { p.key = posKey(p.fen); p.groupKey = g.key; }
+    }
+    return rep;
   }
 
   // ------------------------------ public API ------------------------------
@@ -1057,10 +1359,11 @@
     // custom lines
     customBook, rebuildCustomSet, loadCustomBook, saveCustomBook,
     addCustomLine, removeCustomGroup, toggleManualIgnore,
-    // comparison mode
-    comparison, importComparisonLine, loadComparisonLines, removeComparisonLine,
-    initComparisonSession, getActiveComparisonLine, comparePosition, resetComparisonSession,
-    switchComparisonLine, getComparisonStats, endComparisonSession,
+    // repertoire mode
+    courseManager, setBundledCourses, activeCourses, loadCourses, removeCourse,
+    restoreRemovedCourses, courseFromChesslyRaw, courseFromLines, importCourse,
+    buildRepertoire, classifyGame, runRepertoireAnalysis, recomputeRepertoireFlags,
+    repertoireItems, repertoireDrillPool, normalizeRepResults,
     // sessions / backup
     saveSession, loadSession, buildExport, applyImport, clearCaches,
     // utils

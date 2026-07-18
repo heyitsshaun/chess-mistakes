@@ -12,7 +12,9 @@ const MOBILE = () => window.innerWidth < 900;
 
 // ----------------------------- app state -----------------------------
 let engine = null;
-let lastResults = null;
+let appMode = "rep";       // 'rep' (repertoire, default) | 'legacy' (engine grading)
+let lastResults = null;    // legacy-mode results
+let lastRep = null;        // repertoire-mode results {userDev, oppDev, counts}
 let currentPos = null;
 let currentList = [];      // rendered order, for keyboard nav + "Next"
 let isRunning = false;
@@ -21,6 +23,7 @@ let isBookChecking = false;
 let gradingPromise = null;
 let interactionVersion = 0;
 const control = { stop: false };
+const MODE_KEY = "cmt-mode";
 const DRILL_PREFS_KEY = "cmt-drill-prefs";
 const drillState = {
   active: false,
@@ -37,13 +40,6 @@ const drillState = {
   openSetupAfterExit: false,
   exiting: false,
 };
-
-// Comparison mode state
-const comparisonState = {
-  active: false,
-  panelOpen: false,
-};
-let comparisonShowDeviations = false;
 
 // ----------------------------- settings -----------------------------
 function readSettings() {
@@ -67,7 +63,35 @@ function readSettings() {
     flagShare: CMT.clamp(+$("flagShare").value, 0, 1),
     minOcc: Math.max(1, +$("minOcc").value),
     bookMax: +$("bookMax").value,
+    windowSize: CMT.clamp(+$("windowSize").value || 5, 1, 15),
   };
+}
+
+// ----------------------------- mode -----------------------------
+function setMode(mode, opts) {
+  appMode = mode === "legacy" ? "legacy" : "rep";
+  try { localStorage.setItem(MODE_KEY, appMode); } catch (e) { /* optional */ }
+  $("modeRep").classList.toggle("active", appMode === "rep");
+  $("modeLegacy").classList.toggle("active", appMode === "legacy");
+  document.body.classList.toggle("mode-legacy", appMode === "legacy");
+  if (!opts || !opts.silent) {
+    if (drillState.active) exitDrillForDataChange();
+    currentPos = null;
+    $("detail").innerHTML = '<p class="empty">Select a position to review and retry it.</p>';
+    renderList();
+  }
+}
+
+// Mode-appropriate empty state (also replaces stale cards on mode switch).
+function renderHero() {
+  const rep = appMode === "rep";
+  $("results").innerHTML = `<div class="hero"><div class="hero-board" aria-hidden="true"></div>
+    <h2>${rep ? "Find where your games leave your prep" : "Find the moves you keep getting wrong"}</h2>
+    <p>${rep
+      ? "Pull your games and compare them to your opening courses: see where you break from your lines first, and how you respond when opponents do."
+      : "Pull your games, grade every move with Stockfish, and drill the positions where you go wrong most often."}</p>
+    <button id="heroRun" class="primary big">Analyze my games</button></div>`;
+  $("heroRun").addEventListener("click", () => run(null));
 }
 
 // ----------------------------- status / progress -----------------------------
@@ -108,7 +132,6 @@ async function run(games) {
   setBusy(true);
   onProgress(0);
   try {
-    await ensureEngine();
     if (!games) {
       onStatus("Fetching games from Chess.com…");
       games = await CMT.fetchGames(s.username, s.lookback, s.maxGames, onStatus);
@@ -117,14 +140,31 @@ async function run(games) {
         return;
       }
     }
-    lastResults = await CMT.runAnalysis(games, s, { engine, onStatus, onProgress, control });
-    onProgress(1);
-    if (s.bookMax > 0) await CMT.annotateBook(lastResults, s, { onStatus, control });
-    CMT.saveSession(s.username, lastResults);
-    $("exportBtn").disabled = false;
-    renderList();
-    const flagged = lastResults.filter((r) => r.flagged).length;
-    onStatus(`Done. ${lastResults.length} unique positions analyzed, ${flagged} flagged.${control.stop ? " (stopped early)" : ""}`);
+    if (appMode === "rep") {
+      // Engine loads lazily — only if some opponent deviated and there are
+      // post-deviation moves to grade.
+      lastRep = await CMT.runRepertoireAnalysis(games, s, {
+        getEngine: async () => { await ensureEngine(); return engine; },
+        onStatus, onProgress, control,
+      });
+      onProgress(1);
+      saveCurrentSession();
+      $("exportBtn").disabled = false;
+      renderList();
+      const c = lastRep.counts;
+      onStatus(`Done. ${c.games} games: you deviated first in ${c.userDev}, opponents in ${c.oppDev}; `
+        + `${c.bookEnd} stayed in book, ${c.unmatched} unmatched.${control.stop ? " (stopped early)" : ""}`);
+    } else {
+      await ensureEngine();
+      lastResults = await CMT.runAnalysis(games, s, { engine, onStatus, onProgress, control });
+      onProgress(1);
+      if (s.bookMax > 0) await CMT.annotateBook(lastResults, s, { onStatus, control });
+      saveCurrentSession();
+      $("exportBtn").disabled = false;
+      renderList();
+      const flagged = lastResults.filter((r) => r.flagged).length;
+      onStatus(`Done. ${lastResults.length} unique positions analyzed, ${flagged} flagged.${control.stop ? " (stopped early)" : ""}`);
+    }
   } catch (e) {
     console.error(e);
     if (/Failed to fetch|NetworkError|CORS/i.test(e.message)) {
@@ -132,10 +172,14 @@ async function run(games) {
     } else {
       onStatus("Error: " + e.message);
     }
-    if (lastResults) renderList();
+    if (lastResults || lastRep) renderList();
   } finally {
     setBusy(false);
   }
+}
+
+function saveCurrentSession() {
+  CMT.saveSession($("username").value.trim(), lastResults || [], { rep: lastRep, mode: appMode });
 }
 
 // ----------------------------- SVG pieces -----------------------------
@@ -210,7 +254,10 @@ function pills(level, isBook, isIgnored) {
 }
 
 function renderList() {
+  if (appMode === "rep") { renderRepList(); return; }
   if (!lastResults) {
+    currentList = [];
+    renderHero();
     refreshDrillAvailability();
     return;
   }
@@ -255,6 +302,78 @@ function renderList() {
   }
 }
 
+// Repertoire-mode list: user-dev and opp-dev cards, filterable, same rail.
+function expectedSans(r) {
+  return (r.expected || []).map((e) => CMT.escapeHtml(e.san)).join(" or ");
+}
+function courseTag(r) {
+  const warn = r.multiCourse ? ' <span class="pill Multi" title="Position appears in more than one course">⚠ multi</span>' : "";
+  return `<span class="opening">${CMT.escapeHtml(r.courseName || "Course")}</span>${warn}`;
+}
+
+function renderRepList() {
+  if (!lastRep) {
+    currentList = [];
+    renderHero();
+    refreshDrillAvailability();
+    return;
+  }
+  const showAll = $("showAll").checked;
+  const hideBefore = +$("hideBefore").value || 0;
+  const s = readSettings();
+  CMT.recomputeRepertoireFlags(lastRep, s, CMT.customBook.set);
+  let items = CMT.repertoireItems(lastRep, $("devFilter").value);
+  items = items.filter((r) => (showAll || r.flagged) && r.moveNo > hideBefore);
+  items = CMT.sortResults(items, $("sortBy").value);
+  currentList = items;
+  refreshDrillAvailability();
+  const el = $("results");
+  if (!items.length) {
+    const any = lastRep.userDev.length + lastRep.oppDev.length;
+    el.innerHTML = `<div class="hero"><div class="hero-board" aria-hidden="true"></div>
+      <h2>${any ? "Nothing flagged with these filters" : "No deviations found"}</h2>
+      <p>${any
+        ? "Deviations exist but none match the current filters — try “show all”, lower the thresholds, or switch the deviation filter."
+        : "Every analyzed game either stayed inside your courses or wasn't matched. Widen the lookback or check the right courses are loaded (Settings → Repertoire courses)."}</p></div>`;
+    return;
+  }
+  el.innerHTML = "";
+  for (const r of items) {
+    const card = document.createElement("div");
+    card.className = "card" + (currentPos && currentPos.key === r.key ? " active" : "");
+    card.dataset.key = r.key;
+    card.setAttribute("role", "button");
+    card.setAttribute("tabindex", "0");
+    if (r.kind === "user-dev") {
+      const worst = r.plays[0];
+      card.innerHTML = `
+        <div class="thumb">${miniBoardSVG(r.fen, r.color)}</div>
+        <div>
+          ${courseTag(r)} <span class="meta">Move ${r.moveNo} · ${r.color === "w" ? "White" : "Black"}</span>
+          <div class="line"><span class="pill UserDev">I deviated</span> You played <b>${CMT.escapeHtml(worst.san)}</b> ${worst.count}/${r.total}×</div>
+          <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--mistake)"></span></div>
+          <div class="meta">off-book ${(r.badShare * 100).toFixed(0)}% of ${r.total} visit${r.total === 1 ? "" : "s"} · course: <b>${expectedSans(r)}</b></div>
+        </div>
+        <span class="chev">›</span>`;
+    } else {
+      const graded = r.positions.reduce((n, p) => n + p.total, 0);
+      const bad = r.badCount;
+      card.innerHTML = `
+        <div class="thumb">${miniBoardSVG(r.fen, r.color)}</div>
+        <div>
+          ${courseTag(r)} <span class="meta">Move ${r.moveNo} · ${r.color === "w" ? "White" : "Black"} to answer</span>
+          <div class="line"><span class="pill OppDev">They deviated</span> Opponents played <b>${CMT.escapeHtml(r.theirMove.san)}</b> ${r.count}×</div>
+          <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--inacc)"></span></div>
+          <div class="meta">${bad ? `<b>${bad}</b> of your ${graded} replies flagged` : graded ? `all ${graded} of your replies fine` : "replies not graded yet"} · avg loss ${r.avgCpl.toFixed(0)}cp</div>
+        </div>
+        <span class="chev">›</span>`;
+    }
+    card.addEventListener("click", () => selectPosition(r, card));
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectPosition(r, card); } });
+    el.appendChild(card);
+  }
+}
+
 // ----------------------------- shuffled drill -----------------------------
 function normalizeDrillConfig(raw) {
   raw = raw || {};
@@ -291,10 +410,23 @@ function setupDrillConfig() {
 }
 
 function computeDrillPool(config) {
+  if (appMode === "rep") {
+    if (!lastRep) return [];
+    CMT.recomputeRepertoireFlags(lastRep, readSettings(), CMT.customBook.set);
+    const include = { all: "all", user: "user", opp: "opp" }[$("devFilter").value] || "all";
+    return CMT.repertoireDrillPool(lastRep, Object.assign({}, config, { include }))
+      .filter((r) => r.fen && (r.kind === "user-dev" ? r.answerUcis.length : r.best));
+  }
   if (!lastResults || !lastResults.length) return [];
   CMT.recomputeFlags(lastResults, readSettings(), $("ignoreBook").checked, CMT.customBook.set);
   return CMT.filterDrillPositions(lastResults, config)
     .filter((r) => r.fen && r.best);
+}
+
+function hasAnyResults() {
+  return appMode === "rep"
+    ? !!lastRep && (lastRep.userDev.length + lastRep.oppDev.length) > 0
+    : !!lastResults && lastResults.length > 0;
 }
 
 function refreshDrillAvailability() {
@@ -302,8 +434,8 @@ function refreshDrillAvailability() {
   const count = $("drillEligibleCount");
   if (!button || !count) return;
   const pool = computeDrillPool(currentDrillConfig());
-  button.disabled = !lastResults || !lastResults.length || isRunning || isImporting || isBookChecking || !!gradingPromise;
-  count.textContent = isBookChecking ? "Checking book…" : lastResults ? `${pool.length} eligible` : "Analyze first";
+  button.disabled = !hasAnyResults() || isRunning || isImporting || isBookChecking || !!gradingPromise;
+  count.textContent = isBookChecking ? "Checking book…" : hasAnyResults() ? `${pool.length} eligible` : "Analyze first";
   if (!$("drillSetup").hidden) updateDrillPoolPreview();
 }
 
@@ -350,7 +482,7 @@ function openDrillSetup() {
     onStatus("Wait for the opening-book check to finish before starting a drill.");
     return;
   }
-  if (!lastResults || !lastResults.length) {
+  if (!hasAnyResults()) {
     onStatus("Analyze some games before starting a drill.");
     return;
   }
@@ -375,6 +507,16 @@ function copySettingsForDrill() {
 }
 
 function positionForDrillKey(key) {
+  if (appMode === "rep") {
+    if (!lastRep) return null;
+    const ud = lastRep.userDev.find((r) => r.key === key);
+    if (ud) return ud;
+    for (const g of lastRep.oppDev) {
+      const p = g.positions.find((q) => q.key === key);
+      if (p) return p;
+    }
+    return null;
+  }
   return (lastResults || []).find((r) => r.key === key) || null;
 }
 
@@ -501,7 +643,9 @@ function showDrillPosition() {
       </div>
       <div class="board-wrap">
         <div id="board" class="board" tabindex="0" aria-label="Chess position for drill ${positionNumber}"></div>
-        <div id="feedback" class="feedback" aria-live="polite">Your move. Play a move that avoids the mistake.</div>
+        <div id="feedback" class="feedback" aria-live="polite">${r.kind === "user-dev"
+          ? "Your move. Play what your course plays here."
+          : "Your move. Play a move that avoids the mistake."}</div>
       </div>
       <div class="drill-actions">
         <button id="drillReveal" type="button">Reveal answer</button>
@@ -524,12 +668,18 @@ function revealDrillAnswer() {
   const outcome = drillOutcome(currentPos.key);
   if (outcome.solved) return;
   outcome.revealed = true;
-  boardState.best = currentPos.best;
-  drawArrow();
-  const bestSan = CMT.uciToSan(currentPos.fen, currentPos.best) || currentPos.best || "?";
   const fb = $("feedback");
   fb.className = "feedback";
-  fb.innerHTML = `Best move: <b>${CMT.escapeHtml(bestSan)}</b>. You can try it, then continue.`;
+  if (currentPos.kind === "user-dev") {
+    boardState.best = currentPos.answerUcis[0];
+    drawArrow();
+    fb.innerHTML = `Course move: <b>${expectedSans(currentPos)}</b>. You can try it, then continue.`;
+  } else {
+    boardState.best = currentPos.best;
+    drawArrow();
+    const bestSan = CMT.uciToSan(currentPos.fen, currentPos.best) || currentPos.best || "?";
+    fb.innerHTML = `Best move: <b>${CMT.escapeHtml(bestSan)}</b>. You can try it, then continue.`;
+  }
   syncDrillControls();
 }
 
@@ -790,6 +940,9 @@ function selectPosition(r, cardEl) {
     onStatus("Wait for the current move to finish grading before changing positions.");
     return;
   }
+  if (r.kind === "user-dev") return selectUserDev(r, cardEl);
+  if (r.kind === "opp-dev") return selectOppDev(r, cardEl);
+  if (r.kind === "opp-window") return selectOppWindow(r);
   interactionVersion++;
   currentPos = r;
   document.querySelectorAll(".card").forEach((c) => c.classList.remove("active"));
@@ -860,14 +1013,217 @@ function selectPosition(r, cardEl) {
   $("resetBoard").addEventListener("click", resetCurrent);
   $("nextPos").addEventListener("click", () => {
     if (gradingPromise) return;
-    const i = currentList.indexOf(currentPos);
-    const next = currentList[i + 1];
+    const i = currentListIndex();
+    const next = i >= 0 ? currentList[i + 1] : null;
     if (!next) return;
     const el2 = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === next.key);
     selectPosition(next, el2 || null);
     if (el2 && !MOBILE()) el2.scrollIntoView({ block: "nearest" });
   });
 
+  openTrainer();
+}
+
+// ---- repertoire detail panels ----
+function activateCard(cardEl) {
+  document.querySelectorAll(".card").forEach((c) => c.classList.remove("active"));
+  if (cardEl) cardEl.classList.add("active");
+}
+
+function setupBoardFor(r) {
+  interactionVersion++;
+  currentPos = r;
+  boardState.chess = new Chess(r.fen);
+  boardState.orient = r.color;
+  boardState.sel = null;
+  boardState.best = null;
+  boardState.locked = false;
+  boardState.onMove = retryMove;
+}
+
+function wireDetailCommon(r) {
+  const back = $("backBtn");
+  if (back) back.addEventListener("click", requestCloseTrainer);
+  const show = $("showBest");
+  if (show) show.addEventListener("click", () => { if (!gradingPromise) showAnswerFor(r); });
+  const reset = $("resetBoard");
+  if (reset) reset.addEventListener("click", resetCurrent);
+  const next = $("nextPos");
+  if (next) next.addEventListener("click", () => {
+    if (gradingPromise) return;
+    const i = currentListIndex();
+    const nxt = i >= 0 ? currentList[i + 1] : null;
+    if (!nxt) return;
+    const el2 = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === nxt.key);
+    selectPosition(nxt, el2 || null);
+    if (el2 && !MOBILE()) el2.scrollIntoView({ block: "nearest" });
+  });
+}
+
+// Index of the current position in the rendered list. Key-based because the
+// opp-dev panel sets currentPos to an inner window position whose key matches
+// the group's card.
+function currentListIndex() {
+  if (!currentPos) return -1;
+  const i = currentList.indexOf(currentPos);
+  if (i >= 0) return i;
+  const k = currentPos.groupKey || currentPos.key;
+  return currentList.findIndex((x) => x.key === k);
+}
+
+// "Show answer" for any repertoire position: course move(s) for user-dev,
+// engine best for graded window positions.
+function showAnswerFor(r) {
+  const fb = $("feedback");
+  if (r.kind === "user-dev") {
+    boardState.best = r.answerUcis[0];
+    drawArrow();
+    fb.className = "feedback";
+    fb.innerHTML = `Course plays <b>${expectedSans(r)}</b> here.`;
+  } else if (r.best) {
+    boardState.best = r.best;
+    drawArrow();
+    const bestSan = CMT.uciToSan(r.fen, r.best) || r.best || "?";
+    fb.className = "feedback";
+    fb.innerHTML = `Engine's best: <b>${CMT.escapeHtml(bestSan)}</b> (eval ${CMT.fmtEval(r.bestEval)}).`;
+  }
+}
+
+function selectUserDev(r, cardEl) {
+  activateCard(cardEl);
+  setupBoardFor(r);
+  const histRows = r.plays.map((p) => `
+    <tr><td><b>${CMT.escapeHtml(p.san)}</b></td><td>${p.count}</td>
+    <td><span class="pill OffBook">Off-book</span></td></tr>`).join("");
+  const idx = currentList.indexOf(r);
+  const hasNext = idx >= 0 && idx < currentList.length - 1;
+  $("detail").innerHTML = `
+    <div class="detail-head">
+      <button class="iconbtn backbtn" id="backBtn" aria-label="Back to list">←</button>
+      <div>
+        <h2>${CMT.escapeHtml(r.courseName || "Course")}${r.multiCourse ? " ⚠" : ""} · Move ${r.moveNo}</h2>
+        <div class="statline">${r.color === "w" ? "White" : "Black"} to move · you left the course here <span id="badPct">0%</span> of ${r.total} visit${r.total === 1 ? "" : "s"}</div>
+      </div>
+    </div>
+    <div class="board-wrap">
+      <div id="board" class="board"></div>
+      <div id="feedback" class="feedback" aria-live="polite">Your move. Play what your course plays here.</div>
+      <div class="btnrow mobile-actions">
+        <button id="showBest">Show course move</button>
+        <button id="resetBoard">Reset</button>
+        <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
+        ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
+      </div>
+    </div>
+    <p class="hint">Course continues with <b>${expectedSans(r)}</b>.</p>
+    <table class="hist">
+      <thead><tr><th>What you played instead</th><th>#</th><th></th></tr></thead>
+      <tbody>${histRows}</tbody>
+    </table>`;
+  renderBoard();
+  countUp($("badPct"), Math.round(r.badShare * 100), "%");
+  wireDetailCommon(r);
+  openTrainer();
+}
+
+function selectOppDev(g, cardEl) {
+  activateCard(cardEl);
+  // The board shows the position you face right after their off-book move;
+  // playing on it grades your reply with the engine (same as a window retry).
+  const first = g.positions.find((p) => p.key === g.key);
+  setupBoardFor(first || g);
+  const theirExpected = (g.expected || []).map((e) => CMT.escapeHtml(e.san)).join(" or ");
+  const rows = g.positions.map((p, i) => {
+    const worst = p.plays[0];
+    return `<tr class="wrow" data-i="${i}" role="button" tabindex="0">
+      <td>${p.moveNo}</td>
+      <td><b>${CMT.escapeHtml(worst ? worst.san : "?")}</b>${p.plays.length > 1 ? ` <span class="hint">+${p.plays.length - 1}</span>` : ""}</td>
+      <td>${worst ? pills(worst.level, false, CMT.customBook.set.has(p.key + "|" + worst.uci)) : ""}</td>
+      <td class="evalnum">${p.total ? (p.plays.reduce((n, q) => n + q.cplSum, 0) / p.total).toFixed(0) + "cp" : ""}</td>
+      <td>${p.total}×</td></tr>`;
+  }).join("");
+  const idx = currentList.indexOf(g);
+  const hasNext = idx >= 0 && idx < currentList.length - 1;
+  $("detail").innerHTML = `
+    <div class="detail-head">
+      <button class="iconbtn backbtn" id="backBtn" aria-label="Back to list">←</button>
+      <div>
+        <h2>${CMT.escapeHtml(g.courseName || "Course")}${g.multiCourse ? " ⚠" : ""} · Move ${g.moveNo}</h2>
+        <div class="statline">Opponents played <b>${CMT.escapeHtml(g.theirMove.san)}</b> ${g.count}× (course prepares for ${theirExpected || "—"})</div>
+      </div>
+    </div>
+    <div class="board-wrap">
+      <div id="board" class="board"></div>
+      <div id="feedback" class="feedback" aria-live="polite">Your move. How do you punish (or answer) <b>${CMT.escapeHtml(g.theirMove.san)}</b>?</div>
+      <div class="btnrow mobile-actions">
+        <button id="showBest" ${first && first.best ? "" : "disabled"}>Show best</button>
+        <button id="resetBoard">Reset</button>
+        <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
+        ${g.url ? `<a href="${g.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
+      </div>
+    </div>
+    ${g.positions.length ? `
+    <p class="hint">Your graded replies over the next moves (click one to load it):</p>
+    <table class="hist">
+      <thead><tr><th>Move</th><th>You played</th><th>Grade</th><th>Avg loss</th><th>#</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : `<p class="hint">No graded replies (analysis was stopped before grading, or the games ended immediately).</p>`}`;
+  renderBoard();
+  wireDetailCommon(first || g);
+  document.querySelectorAll(".wrow").forEach((row) => {
+    const open = () => selectOppWindow(g.positions[+row.dataset.i], g);
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+  openTrainer();
+}
+
+function selectOppWindow(p, group) {
+  group = group || (lastRep && lastRep.oppDev.find((g) => g.key === p.groupKey)) || null;
+  setupBoardFor(p);
+  const histRows = p.plays.map((q) => {
+    const ig = CMT.customBook.set.has(p.key + "|" + q.uci);
+    return `<tr><td><b>${CMT.escapeHtml(q.san)}</b></td><td>${q.count}</td>
+      <td>${pills(q.level, false, ig)}</td>
+      <td class="evalnum">${(q.cplSum / q.count).toFixed(0)}cp</td>
+      <td><button class="igbtn" data-uci="${q.uci}" data-san="${CMT.escapeHtml(q.san)}">${ig ? "unignore" : "ignore"}</button></td></tr>`;
+  }).join("");
+  $("detail").innerHTML = `
+    <div class="detail-head">
+      <button class="iconbtn backbtn" id="backBtn" aria-label="Back to list">←</button>
+      <div>
+        <h2>After ${group ? "their <b>" + CMT.escapeHtml(group.theirMove.san) + "</b>" : "the deviation"} · Move ${p.moveNo}</h2>
+        <div class="statline">${p.color === "w" ? "White" : "Black"} to move · seen ${p.total}× · bad <span id="badPct">0%</span></div>
+      </div>
+    </div>
+    <div class="board-wrap">
+      <div id="board" class="board"></div>
+      <div id="feedback" class="feedback" aria-live="polite">Your move. Play the move you think is best.</div>
+      <div class="btnrow mobile-actions">
+        <button id="showBest">Show best</button>
+        <button id="resetBoard">Reset</button>
+        ${group ? `<button id="backToGroup">↩ Deviation</button>` : ""}
+        ${p.url ? `<a href="${p.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
+      </div>
+    </div>
+    <table class="hist">
+      <thead><tr><th>Your moves here</th><th>#</th><th>Grade</th><th>Avg loss</th><th></th></tr></thead>
+      <tbody>${histRows}</tbody>
+    </table>`;
+  renderBoard();
+  countUp($("badPct"), Math.round(p.badShare * 100), "%");
+  wireDetailCommon(p);
+  if (group) $("backToGroup").addEventListener("click", () => {
+    if (gradingPromise) return;
+    const el2 = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === group.key);
+    selectOppDev(group, el2 || null);
+  });
+  document.querySelectorAll(".igbtn").forEach((b) => b.addEventListener("click", () => {
+    CMT.toggleManualIgnore(p, b.dataset.uci, b.dataset.san);
+    renderCustomBook();
+    renderList();
+    selectOppWindow(p, group);
+  }));
   openTrainer();
 }
 
@@ -880,9 +1236,11 @@ function resetCurrent() {
   renderBoard();
   const fb = $("feedback");
   fb.className = "feedback";
-  fb.textContent = drillState.active
-    ? "Your move. Play a move that avoids the mistake."
-    : "Your move. Play the move you think is best.";
+  fb.textContent = r.kind === "user-dev"
+    ? "Your move. Play what your course plays here."
+    : drillState.active
+      ? "Your move. Play a move that avoids the mistake."
+      : "Your move. Play the move you think is best.";
   syncDrillControls();
 }
 
@@ -892,7 +1250,7 @@ function syncAttemptControls() {
     const button = $(id);
     if (!button) continue;
     if (id === "nextPos") {
-      const index = currentList.indexOf(currentPos);
+      const index = currentListIndex();
       button.disabled = pending || index < 0 || index >= currentList.length - 1;
     } else {
       button.disabled = pending;
@@ -902,9 +1260,37 @@ function syncAttemptControls() {
   refreshDrillAvailability();
 }
 
+// Course-move check for "I deviated" positions: no engine, instant verdict.
+function retryCourseMove(r, from, to, promo) {
+  const test = new Chess(r.fen);
+  const mv = test.move({ from, to, promotion: promo });
+  if (!mv) return;
+  const userUci = from + to + (promo || "");
+  const inDrill = drillState.active && !drillState.complete;
+  const correct = r.answerUcis.includes(userUci);
+  boardState.chess = test;
+  renderBoard();
+  const fb = $("feedback");
+  fb.className = "feedback " + (correct ? "good pop" : "bad");
+  if (inDrill) {
+    const outcome = drillOutcome(r.key);
+    outcome.attempts++;
+    if (outcome.firstTry == null) outcome.firstTry = outcome.attempts === 1 && !outcome.revealed && correct;
+    if (correct) outcome.solved = true;
+  }
+  fb.innerHTML = correct
+    ? `<b>${CMT.escapeHtml(mv.san)}</b> — that's the course move. ✓`
+    : `<b>${CMT.escapeHtml(mv.san)}</b> is off-book. Course plays <b>${expectedSans(r)}</b>. <button class="igbtn" id="tryAgain">Try again</button>`;
+  const ta = $("tryAgain");
+  if (ta) ta.addEventListener("click", resetCurrent);
+  if (correct) { boardState.best = userUci; drawArrow(); }
+  syncDrillControls();
+}
+
 async function retryMove(from, to, promo) {
   const r = currentPos;
   if (!r || gradingPromise || isImporting || boardState.locked) return;
+  if (r.kind === "user-dev") return retryCourseMove(r, from, to, promo);
   const test = new Chess(r.fen);
   const mv = test.move({ from, to, promotion: promo });
   if (!mv) return;
@@ -950,13 +1336,6 @@ async function retryMove(from, to, promo) {
   }
   if (!isCurrentAttempt()) return;
 
-  // Check comparison mode
-  let comparisonInfo = null;
-  if (CMT.comparison.session) {
-    const cmpResult = CMT.comparePosition(userUci, mv.san, r.fen);
-    comparisonInfo = cmpResult;
-  }
-
   const acceptedLevel = inDrill
     ? drillState.acceptByKey.get(positionKey)
     : 1;
@@ -984,16 +1363,6 @@ async function retryMove(from, to, promo) {
     feedbackMsg = same
       ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>! The engine agrees. Hit <b>Next</b> to keep the streak going.`
       : `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b> (loses ${a.cpl.toFixed(0)}cp). Best was <b>${CMT.escapeHtml(bestSan)}</b>. <button class="igbtn" id="tryAgain">Try again</button>`;
-  }
-
-  // Add comparison feedback if applicable
-  if (comparisonInfo && CMT.comparison.session) {
-    if (comparisonInfo.isMatch) {
-      feedbackMsg += ` <span class="comparison-match">✓ Matches prepared line</span>`;
-    } else if (comparisonInfo.deviation) {
-      const dev = comparisonInfo.deviation;
-      feedbackMsg += ` <span class="comparison-deviation">Deviates from line (expected ${CMT.escapeHtml(dev.expectedSan)})</span>`;
-    }
   }
 
   fb.innerHTML = feedbackMsg;
@@ -1162,193 +1531,60 @@ function setDrawer(open) {
 async function restoreSession() {
   const saved = await CMT.loadSession();
   if (!saved) return;
-  lastResults = saved.results;
+  lastResults = saved.results && saved.results.length ? saved.results : null;
+  lastRep = saved.rep || null;
   if (saved.username) $("username").value = saved.username;
   $("exportBtn").disabled = false;
   const cached = await CMT.storage.count("evals");
-  onStatus(`Restored last analysis (${saved.username || "?"}, ${saved.results.length} positions). ${cached} cached evals on disk.`);
-  const s = readSettings();
-  const needsBook = s.bookMax > 0 && lastResults.some((r) => r.moveNo <= s.bookMax && !r.bookKnown);
-  isBookChecking = needsBook;
+  const what = appMode === "rep" && lastRep
+    ? `${lastRep.userDev.length + lastRep.oppDev.length} deviations`
+    : `${(saved.results || []).length} positions`;
+  onStatus(`Restored last analysis (${saved.username || "?"}, ${what}). ${cached} cached evals on disk.`);
   renderList();
-  if (needsBook) {
-    try {
-      await CMT.annotateBook(lastResults, s, { onStatus, control });
-      CMT.saveSession(saved.username, lastResults);
-      onStatus("Opening-book check complete.");
-    } catch (e) {
-      onStatus("Opening-book check could not finish: " + e.message);
-    } finally {
-      isBookChecking = false;
-      renderList();
-    }
-  }
-}
-
-// ----------------------------- comparison mode UI -----------------------------
-async function renderComparisonPanel() {
-  const el = $("comparisonPanel");
-  if (!el) return;
-
-  const lines = CMT.comparison.lines;
-  if (!lines.length) {
-    el.innerHTML = `<div class="comparison-empty">
-      <p>No custom lines loaded yet.</p>
-      <p>Add a line using the import panel above.</p>
-    </div>`;
-    return;
-  }
-
-  const session = CMT.comparison.session;
-  const stats = session ? CMT.getComparisonStats() : null;
-  const activeLine = session ? CMT.getActiveComparisonLine() : null;
-
-  let html = `<div class="comparison-container">
-    <div class="comparison-header">
-      <h3>Comparison Lines</h3>
-      <span class="hint">${lines.length} line${lines.length === 1 ? "" : "s"}</span>
-    </div>`;
-
-  if (session && activeLine) {
-    html += `<div class="comparison-active">
-      <div class="comparison-line-header">
-        <strong>${CMT.escapeHtml(activeLine.name)}</strong>
-        <span class="hint">${activeLine.uciMoves.length} moves</span>
-      </div>`;
-
-    if (stats) {
-      html += `<div class="comparison-stats">
-        <span>Matched: <b>${stats.matchedMoves}</b>/${stats.totalMoves} (${stats.matchRate}%)</span>`;
-      if (stats.deviationMoves > 0) {
-        html += `<span>Deviations: <b>${stats.deviationMoves}</b></span>`;
-      }
-      html += `</div>`;
-
-      if (stats.deviations.length > 0) {
-        html += `<div class="comparison-deviations-preview">
-          <button id="showDeviations" type="button">Show deviations (${stats.deviations.length})</button>
-        </div>`;
+  // Legacy results may still need their opening-book pass.
+  if (appMode === "legacy" && lastResults) {
+    const s = readSettings();
+    const needsBook = s.bookMax > 0 && lastResults.some((r) => r.moveNo <= s.bookMax && !r.bookKnown);
+    isBookChecking = needsBook;
+    if (needsBook) {
+      try {
+        await CMT.annotateBook(lastResults, s, { onStatus, control });
+        saveCurrentSession();
+        onStatus("Opening-book check complete.");
+      } catch (e) {
+        onStatus("Opening-book check could not finish: " + e.message);
+      } finally {
+        isBookChecking = false;
+        renderList();
       }
     }
-
-    html += `</div>`;
-  }
-
-  html += `<div class="comparison-lines-list">`;
-  for (const line of lines) {
-    const isActive = session && session.activeLineId === line.id;
-    html += `<div class="comparison-line-item ${isActive ? "active" : ""}">
-      <div class="comparison-line-label">${CMT.escapeHtml(line.name)}</div>
-      <div class="comparison-line-meta">
-        <span class="hint">${line.uciMoves.length} moves</span>
-        <button class="close-btn" data-lineid="${line.id}" title="Remove line">✕</button>
-      </div>
-      ${isActive ? '<span class="hint">active</span>' : ''}
-    </div>`;
-  }
-  html += `</div></div>`;
-
-  el.innerHTML = html;
-
-  // Wire events
-  for (const btn of el.querySelectorAll(".close-btn")) {
-    btn.addEventListener("click", () => {
-      const lineId = btn.dataset.lineid;
-      CMT.removeComparisonLine(lineId);
-      renderComparisonPanel();
-      renderList();
-    });
-  }
-
-  const showBtn = el.querySelector("#showDeviations");
-  if (showBtn) {
-    showBtn.addEventListener("click", () => {
-      comparisonShowDeviations = !comparisonShowDeviations;
-      renderComparisonDeviations();
-    });
   }
 }
 
-function renderComparisonDeviations() {
-  const el = $("comparisonDeviations");
+// ----------------------------- course manager -----------------------------
+function renderCourses() {
+  const el = $("courseList");
   if (!el) return;
-
-  const stats = CMT.comparison.session ? CMT.getComparisonStats() : null;
-  if (!stats || !stats.deviations.length) {
-    el.innerHTML = "";
+  const courses = CMT.activeCourses();
+  $("restoreCourses").hidden = !CMT.courseManager.removedIds.length;
+  if (!courses.length) {
+    el.innerHTML = '<p class="hint">No courses loaded. Import a Chessly crawl or paste lines below.</p>';
     return;
   }
-
-  if (!comparisonShowDeviations) {
-    el.innerHTML = "";
-    return;
-  }
-
-  let html = `<div class="comparison-deviations">
-    <h4>Deviations from loaded line</h4>
-    <table class="comparison-dev-table">
-      <thead><tr>
-        <th>Move #</th><th>Position</th><th>Expected</th><th>Played</th><th></th>
-      </tr></thead>
-      <tbody>`;
-
-  for (const dev of stats.deviations) {
-    html += `<tr>
-      <td>${dev.moveNo}</td>
-      <td class="hint">${dev.posKey.slice(0, 8)}…</td>
-      <td><b>${CMT.escapeHtml(dev.expectedSan)}</b></td>
-      <td><b>${CMT.escapeHtml(dev.actualSan)}</b></td>
-      <td><button class="sm-btn" data-poskey="${dev.posKey}">View</button></td>
-    </tr>`;
-  }
-
-  html += `</tbody></table></div>`;
-  el.innerHTML = html;
-
-  for (const btn of el.querySelectorAll(".sm-btn")) {
-    btn.addEventListener("click", () => {
-      // User could click to jump to deviation position in analysis view
-      onStatus("Deviation position noted. Review in analysis.");
-    });
-  }
-}
-
-async function openComparisonImport() {
-  const el = $("comparisonImport");
-  if (!el) return;
-  el.hidden = false;
-  $("comparisonLineInput").focus();
-}
-
-function closeComparisonImport() {
-  const el = $("comparisonImport");
-  if (!el) return;
-  el.hidden = true;
-  $("comparisonLineInput").value = "";
-}
-
-async function addComparisonLine() {
-  const text = $("comparisonLineInput").value.trim();
-  const label = $("comparisonLineLabel").value.trim();
-  if (!text) {
-    onStatus("Paste opening moves (PGN or SAN format)");
-    return;
-  }
-
-  try {
-    const line = CMT.importComparisonLine(text, label || undefined);
-    renderComparisonPanel();
-    renderList();
-    closeComparisonImport();
-    onStatus(`Added line: ${line.name} (${line.uciMoves.length} moves)`);
-
-    // Auto-init session if not already active
-    if (!CMT.comparison.session && CMT.comparison.lines.length > 0) {
-      CMT.initComparisonSession(CMT.comparison.lines.map((l) => l.id));
-      renderComparisonPanel();
-    }
-  } catch (e) {
-    onStatus("Invalid line: " + e.message);
+  el.innerHTML = "";
+  for (const c of courses) {
+    const nPos = Object.keys(c.positions || {}).length;
+    const row = document.createElement("div");
+    row.className = "cbrow";
+    row.innerHTML = `<span class="cbl">${CMT.escapeHtml(c.shortName || c.name)}</span>
+      <span class="hint">${c.color === "w" ? "White" : "Black"} · ${nPos} positions${c.custom ? " · custom" : ""}</span>`;
+    const btn = document.createElement("button");
+    btn.textContent = "✕";
+    btn.title = "Remove course";
+    btn.setAttribute("aria-label", "Remove course " + (c.shortName || c.name));
+    btn.addEventListener("click", () => { CMT.removeCourse(c.id); renderCourses(); });
+    row.appendChild(btn);
+    el.appendChild(row);
   }
 }
 
@@ -1381,7 +1617,7 @@ function onKeydown(e) {
   if (gradingPromise) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
-    const i = currentPos ? currentList.indexOf(currentPos) : -1;
+    const i = currentListIndex();
     const j = e.key === "ArrowDown" ? Math.min(currentList.length - 1, i + 1) : Math.max(0, i - 1);
     const r = currentList[j];
     if (!r || r === currentPos) return;
@@ -1448,9 +1684,48 @@ function init() {
   $("closeSettings").addEventListener("click", () => setDrawer(false));
   $("drawerScrim").addEventListener("click", () => setDrawer(false));
 
+  // Mode toggle (persisted; repertoire is the default)
+  let savedMode = "rep";
+  try { savedMode = localStorage.getItem(MODE_KEY) || "rep"; } catch (e) { /* default */ }
+  setMode(savedMode, { silent: true });
+  $("modeRep").addEventListener("click", () => { if (appMode !== "rep") setMode("rep"); });
+  $("modeLegacy").addEventListener("click", () => { if (appMode !== "legacy") setMode("legacy"); });
+
+  // Repertoire courses: bundled + persisted imports
+  CMT.setBundledCourses(window.CMT_COURSES || []);
+  CMT.loadCourses().then(renderCourses);
+  $("devFilter").addEventListener("change", renderList);
+  $("restoreCourses").addEventListener("click", () => { CMT.restoreRemovedCourses(); renderCourses(); });
+  $("courseFile").addEventListener("change", async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    let added = 0;
+    for (const f of files) {
+      try {
+        const course = CMT.courseFromChesslyRaw(JSON.parse(await f.text()));
+        CMT.importCourse(course);
+        added++;
+      } catch (err) {
+        onStatus(`Could not import ${f.name}: ${err.message}`);
+      }
+    }
+    if (added) { renderCourses(); onStatus(`Imported ${added} course${added === 1 ? "" : "s"}. Re-run the analysis to use them.`); }
+  });
+  $("addCourseLines").addEventListener("click", () => {
+    const text = $("courseLineInput").value.trim();
+    if (!text) { onStatus("Paste one or more lines first."); return; }
+    try {
+      const course = CMT.courseFromLines(text, $("courseLineName").value.trim() || undefined, $("courseLineColor").value);
+      CMT.importCourse(course);
+      renderCourses();
+      $("courseLineInput").value = "";
+      $("courseLineName").value = "";
+      onStatus(`Added course “${course.name}” (${Object.keys(course.positions).length} positions). Re-run the analysis to use it.`);
+    } catch (err) { onStatus("Could not parse lines: " + err.message); }
+  });
+
   // Core flows
   CMT.loadCustomBook().then(() => { renderCustomBook(); return restoreSession(); });
-  CMT.loadComparisonLines().then(() => { renderComparisonPanel(); });
   $("run").addEventListener("click", () => run(null));
   $("heroRun") && $("heroRun").addEventListener("click", () => run(null));
   $("stop").addEventListener("click", () => { control.stop = true; onStatus("Stopping after current move…"); });
@@ -1483,24 +1758,6 @@ function init() {
     } catch (e) { onStatus("Could not parse line: " + e.message); }
   });
   $("lineInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("addLine").click(); } });
-
-  // Comparison mode
-  if ($("openComparison")) {
-    $("openComparison").addEventListener("click", () => {
-      openComparisonImport();
-    });
-  }
-  if ($("comparisonLineInput")) {
-    $("comparisonLineInput").addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); addComparisonLine(); }
-    });
-  }
-  if ($("addComparisonLine")) {
-    $("addComparisonLine").addEventListener("click", addComparisonLine);
-  }
-  if ($("closeComparisonImport")) {
-    $("closeComparisonImport").addEventListener("click", closeComparisonImport);
-  }
 
   $("clearCache").addEventListener("click", async () => {
     if (gradingPromise || isImporting) {
@@ -1536,16 +1793,18 @@ function init() {
   });
 
   $("exportBtn").addEventListener("click", async () => {
-    if (!lastResults) return;
+    if (!lastResults && !lastRep) return;
     onStatus("Exporting backup…");
     await CMT.storage.set("sessions", "themes", Themes.data());
-    const payload = await CMT.buildExport($("username").value, readSettings(), lastResults);
+    const payload = await CMT.buildExport($("username").value, readSettings(), lastResults || [], { rep: lastRep, mode: appMode });
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "chess-mistakes-" + ($("username").value || "results") + ".json";
     a.click();
-    onStatus(`Exported ${lastResults.length} positions and ${Object.keys(payload.evals).length} cached evals.`);
+    onStatus(`Exported ${(lastResults || []).length} positions`
+      + (lastRep ? `, ${lastRep.userDev.length + lastRep.oppDev.length} deviations` : "")
+      + ` and ${Object.keys(payload.evals).length} cached evals.`);
   });
 
   $("importFile").addEventListener("change", async (e) => {
@@ -1562,18 +1821,22 @@ function init() {
     syncAttemptControls();
     try {
       const data = JSON.parse(await f.text());
-      const { results, summary } = await CMT.applyImport(data, engine);
+      const { results, rep, summary } = await CMT.applyImport(data, engine);
       if (drillState.active) exitDrillForDataChange();
-      lastResults = results;
+      lastResults = results && results.length ? results : null;
+      lastRep = rep || null;
       if (summary.username) $("username").value = summary.username;
       if (data.themes) { Themes.importData(data.themes); renderThemeUI(); }
+      if (summary.mode) setMode(summary.mode, { silent: true });
       $("exportBtn").disabled = false;
       renderCustomBook();
+      renderCourses();
       renderList();
       onStatus(`Loaded ${summary.positions} positions`
+        + (summary.rep ? " + repertoire results" : "")
         + (summary.evals ? ` + ${summary.evals} cached evals` : "")
         + (summary.customGroups ? ` + ${summary.customGroups} custom line group(s)` : "")
-        + (summary.comparisonLines ? ` + ${summary.comparisonLines} comparison line(s)` : "")
+        + (summary.courses ? ` + ${summary.courses} imported course(s)` : "")
         + (summary.themes ? " + themes" : "")
         + " from file.");
     } catch (err) {
