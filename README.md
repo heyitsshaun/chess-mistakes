@@ -17,7 +17,7 @@ Stockfish engine and the chess library from a CDN, and to fetch your games.
 
 ## Use it
 
-1. Enter your **Chess.com username** (defaults to `your-username`).
+1. Enter your **Chess.com username**.
 2. Set the **lookback** (default 90 days), **max games** (0 = unlimited — the lookback
    window still caps it), how far into each game to
    analyze (**analyze up to move #**, default 16 — openings/early middlegame), and the
