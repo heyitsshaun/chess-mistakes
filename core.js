@@ -788,6 +788,7 @@
       username, settings, results,
       evals,
       customBook: customBook.groups,
+      comparisonLines: comparison.lines,
       themes: themes || null,
     };
   }
@@ -795,7 +796,7 @@
   // Apply an imported backup. Returns a summary for the UI to display.
   async function applyImport(data, engine) {
     const results = normalizeResults(data.results || data);
-    const summary = { positions: results.length, evals: 0, customGroups: 0, username: data.username || "" };
+    const summary = { positions: results.length, evals: 0, customGroups: 0, comparisonLines: 0, username: data.username || "" };
     if (data.evals && typeof data.evals === "object") {
       await storage.setMany("evals", data.evals);
       if (engine) for (const k in data.evals) engine.cache.set(k, data.evals[k]);
@@ -806,6 +807,11 @@
       rebuildCustomSet();
       await saveCustomBook();
       summary.customGroups = data.customBook.length;
+    }
+    if (Array.isArray(data.comparisonLines) && data.comparisonLines.length) {
+      comparison.lines = data.comparisonLines;
+      await saveComparisonLines();
+      summary.comparisonLines = data.comparisonLines.length;
     }
     if (data.themes && typeof data.themes === "object") {
       await storage.set("sessions", "themes", data.themes);
@@ -857,6 +863,182 @@
     return grid;
   }
 
+  // ------------------------------ comparison mode ------------------------------
+  // Track user's game moves against prepared opening lines.
+  const comparison = {
+    lines: [],        // ComparisonLine[]
+    session: null,    // ComparisonSession (active)
+  };
+
+  function importComparisonLine(pgnOrSan, lineLabel) {
+    const pairs = parseLineToPairs(pgnOrSan);
+    if (!pairs.length) throw new Error("no valid moves in line");
+
+    const uciMoves = pairs.map((p) => p.uci);
+    const positions = [];
+    const c = new ChessCtor();
+
+    for (let i = 0; i < uciMoves.length; i++) {
+      const mv = c.move({ from: uciMoves[i].slice(0, 2), to: uciMoves[i].slice(2, 4), promotion: uciMoves[i][4] });
+      if (mv) {
+        positions.push({
+          fen: c.fen(),
+          moveNo: Math.floor(i / 2) + 1,
+          posKey: posKey(c.fen()),
+          uci: uciMoves[i],
+          san: mv.san,
+        });
+      }
+    }
+
+    const line = {
+      id: "line-" + Date.now() + "-" + Math.random().toString(36).slice(2, 9),
+      name: lineLabel || pairs.map((p) => p.san).join(" "),
+      moves: pairs.map((p) => p.san),
+      uciMoves,
+      positions,
+      createdAt: Date.now(),
+      lastUsed: Date.now(),
+    };
+
+    comparison.lines.push(line);
+    saveComparisonLines();
+    return line;
+  }
+
+  function saveComparisonLines() {
+    return storage.set("sessions", "comparisonLines", { lines: comparison.lines });
+  }
+
+  async function loadComparisonLines() {
+    const saved = await storage.get("sessions", "comparisonLines");
+    if (saved && Array.isArray(saved.lines)) {
+      comparison.lines = saved.lines;
+    }
+    return comparison.lines;
+  }
+
+  function removeComparisonLine(lineId) {
+    comparison.lines = comparison.lines.filter((line) => line.id !== lineId);
+    if (comparison.session && comparison.session.activeLineId === lineId) {
+      comparison.session.activeLineId = comparison.lines[0]?.id || null;
+    }
+    saveComparisonLines();
+  }
+
+  function initComparisonSession(lineIds) {
+    const loadedLines = comparison.lines.filter((line) => lineIds.includes(line.id));
+    if (!loadedLines.length) throw new Error("no valid lines selected");
+
+    comparison.session = {
+      id: "session-" + Date.now(),
+      activeLineId: loadedLines[0].id,
+      loadedLines: loadedLines.map((l) => l.id),
+      currentMoveIndex: 0,
+      deviations: [],
+      stats: {
+        totalMoves: 0,
+        matchedMoves: 0,
+        deviationMoves: 0,
+        firstDeviationMove: null,
+        deviationsByPosition: {},
+      },
+    };
+    return comparison.session;
+  }
+
+  function getActiveComparisonLine() {
+    if (!comparison.session) return null;
+    return comparison.lines.find((l) => l.id === comparison.session.activeLineId);
+  }
+
+  function comparePosition(userUci, userSan, fenBefore) {
+    if (!comparison.session) return { isMatch: false };
+
+    const line = getActiveComparisonLine();
+    if (!line) return { isMatch: false };
+
+    const expectedUci = line.uciMoves[comparison.session.currentMoveIndex];
+    const isMatch = userUci === expectedUci;
+
+    if (!isMatch) {
+      const deviation = {
+        lineId: line.id,
+        posKey: posKey(fenBefore),
+        moveNo: Math.floor(comparison.session.currentMoveIndex / 2) + 1,
+        expectedUci,
+        expectedSan: line.moves[comparison.session.currentMoveIndex],
+        actualUci: userUci,
+        actualSan: userSan,
+        timestamp: Date.now(),
+      };
+      comparison.session.deviations.push(deviation);
+
+      // Track deviation by position for stats
+      const key = posKey(fenBefore);
+      if (!comparison.session.stats.deviationsByPosition[key]) {
+        comparison.session.stats.deviationsByPosition[key] = [];
+      }
+      comparison.session.stats.deviationsByPosition[key].push({
+        uci: userUci,
+        expected: expectedUci,
+      });
+
+      comparison.session.stats.deviationMoves++;
+      if (comparison.session.stats.firstDeviationMove === null) {
+        comparison.session.stats.firstDeviationMove = comparison.session.currentMoveIndex;
+      }
+
+      return { isMatch: false, deviation };
+    }
+
+    // Move matched — advance line
+    comparison.session.currentMoveIndex++;
+    comparison.session.stats.matchedMoves++;
+    comparison.session.stats.totalMoves++;
+    return { isMatch: true };
+  }
+
+  function resetComparisonSession() {
+    if (comparison.session) {
+      comparison.session.currentMoveIndex = 0;
+      comparison.session.deviations = [];
+      comparison.session.stats = {
+        totalMoves: 0,
+        matchedMoves: 0,
+        deviationMoves: 0,
+        firstDeviationMove: null,
+        deviationsByPosition: {},
+      };
+    }
+  }
+
+  function switchComparisonLine(lineId) {
+    if (comparison.session) {
+      comparison.session.activeLineId = lineId;
+      resetComparisonSession();
+    }
+  }
+
+  function getComparisonStats() {
+    if (!comparison.session) return null;
+    const s = comparison.session.stats;
+    const total = s.matchedMoves + s.deviationMoves;
+    return {
+      totalMoves: total,
+      matchedMoves: s.matchedMoves,
+      deviationMoves: s.deviationMoves,
+      matchRate: total > 0 ? (s.matchedMoves / total * 100).toFixed(1) : 0,
+      deviations: comparison.session.deviations,
+      deviationsByPosition: s.deviationsByPosition,
+      firstDeviationMove: s.firstDeviationMove,
+    };
+  }
+
+  function endComparisonSession() {
+    comparison.session = null;
+  }
+
   // ------------------------------ public API ------------------------------
   return {
     // constants
@@ -875,6 +1057,10 @@
     // custom lines
     customBook, rebuildCustomSet, loadCustomBook, saveCustomBook,
     addCustomLine, removeCustomGroup, toggleManualIgnore,
+    // comparison mode
+    comparison, importComparisonLine, loadComparisonLines, removeComparisonLine,
+    initComparisonSession, getActiveComparisonLine, comparePosition, resetComparisonSession,
+    switchComparisonLine, getComparisonStats, endComparisonSession,
     // sessions / backup
     saveSession, loadSession, buildExport, applyImport, clearCaches,
     // utils

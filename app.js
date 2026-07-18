@@ -38,6 +38,13 @@ const drillState = {
   exiting: false,
 };
 
+// Comparison mode state
+const comparisonState = {
+  active: false,
+  panelOpen: false,
+};
+let comparisonShowDeviations = false;
+
 // ----------------------------- settings -----------------------------
 function readSettings() {
   return {
@@ -905,6 +912,7 @@ async function retryMove(from, to, promo) {
   const sessionId = drillState.sessionId;
   const inDrill = drillState.active && !drillState.complete;
   const positionKey = r.key;
+  const userUci = from + to + (promo || "");
   boardState.locked = true;
   boardState.chess = test;
   renderBoard();
@@ -916,7 +924,7 @@ async function retryMove(from, to, promo) {
   const work = (async () => {
     await ensureEngine();
     return CMT.analyzeMove({
-      fenBefore: r.fen, fenAfter: test.fen(), uci: from + to + (promo || ""),
+      fenBefore: r.fen, fenAfter: test.fen(), uci: userUci,
       terminalAfter: test.game_over(), matedAfter: test.in_checkmate(),
     }, s.depth, s.th, engine);
   })();
@@ -942,14 +950,24 @@ async function retryMove(from, to, promo) {
   }
   if (!isCurrentAttempt()) return;
 
+  // Check comparison mode
+  let comparisonInfo = null;
+  if (CMT.comparison.session) {
+    const cmpResult = CMT.comparePosition(userUci, mv.san, r.fen);
+    comparisonInfo = cmpResult;
+  }
+
   const acceptedLevel = inDrill
     ? drillState.acceptByKey.get(positionKey)
     : 1;
   const acceptable = a.level <= (Number.isFinite(acceptedLevel) ? acceptedLevel : 1);
   const cls = acceptable ? "good" : a.level >= 4 ? "bad" : "warn";
   const bestSan = CMT.uciToSan(r.fen, a.best) || a.best;
-  const same = (from + to + (promo || "")) === a.best || a.cpl === 0;
+  const same = userUci === a.best || a.cpl === 0;
   fb.className = "feedback " + cls + (cls === "good" ? " pop" : "");
+
+  // Build feedback message
+  let feedbackMsg = "";
   if (inDrill) {
     const outcome = drillOutcome(positionKey);
     outcome.attempts++;
@@ -957,16 +975,28 @@ async function retryMove(from, to, promo) {
       outcome.firstTry = outcome.attempts === 1 && !outcome.revealed && acceptable;
     }
     if (acceptable) outcome.solved = true;
-    fb.innerHTML = same
+    feedbackMsg = same
       ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>! You found the engine's move.`
       : acceptable
         ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>. That avoids the mistake; the engine preferred <b>${CMT.escapeHtml(bestSan)}</b>.`
         : `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b> (loses ${a.cpl.toFixed(0)}cp). Best was <b>${CMT.escapeHtml(bestSan)}</b>. <button class="igbtn" id="tryAgain">Try again</button>`;
   } else {
-    fb.innerHTML = same
+    feedbackMsg = same
       ? `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b>! The engine agrees. Hit <b>Next</b> to keep the streak going.`
       : `<b>${CMT.escapeHtml(mv.san)}</b> — <b>${LEVELS[a.level]}</b> (loses ${a.cpl.toFixed(0)}cp). Best was <b>${CMT.escapeHtml(bestSan)}</b>. <button class="igbtn" id="tryAgain">Try again</button>`;
   }
+
+  // Add comparison feedback if applicable
+  if (comparisonInfo && CMT.comparison.session) {
+    if (comparisonInfo.isMatch) {
+      feedbackMsg += ` <span class="comparison-match">✓ Matches prepared line</span>`;
+    } else if (comparisonInfo.deviation) {
+      const dev = comparisonInfo.deviation;
+      feedbackMsg += ` <span class="comparison-deviation">Deviates from line (expected ${CMT.escapeHtml(dev.expectedSan)})</span>`;
+    }
+  }
+
+  fb.innerHTML = feedbackMsg;
   const ta = $("tryAgain");
   if (ta) ta.addEventListener("click", resetCurrent);
   boardState.best = a.best;
@@ -1155,6 +1185,173 @@ async function restoreSession() {
   }
 }
 
+// ----------------------------- comparison mode UI -----------------------------
+async function renderComparisonPanel() {
+  const el = $("comparisonPanel");
+  if (!el) return;
+
+  const lines = CMT.comparison.lines;
+  if (!lines.length) {
+    el.innerHTML = `<div class="comparison-empty">
+      <p>No custom lines loaded yet.</p>
+      <p>Add a line using the import panel above.</p>
+    </div>`;
+    return;
+  }
+
+  const session = CMT.comparison.session;
+  const stats = session ? CMT.getComparisonStats() : null;
+  const activeLine = session ? CMT.getActiveComparisonLine() : null;
+
+  let html = `<div class="comparison-container">
+    <div class="comparison-header">
+      <h3>Comparison Lines</h3>
+      <span class="hint">${lines.length} line${lines.length === 1 ? "" : "s"}</span>
+    </div>`;
+
+  if (session && activeLine) {
+    html += `<div class="comparison-active">
+      <div class="comparison-line-header">
+        <strong>${CMT.escapeHtml(activeLine.name)}</strong>
+        <span class="hint">${activeLine.uciMoves.length} moves</span>
+      </div>`;
+
+    if (stats) {
+      html += `<div class="comparison-stats">
+        <span>Matched: <b>${stats.matchedMoves}</b>/${stats.totalMoves} (${stats.matchRate}%)</span>`;
+      if (stats.deviationMoves > 0) {
+        html += `<span>Deviations: <b>${stats.deviationMoves}</b></span>`;
+      }
+      html += `</div>`;
+
+      if (stats.deviations.length > 0) {
+        html += `<div class="comparison-deviations-preview">
+          <button id="showDeviations" type="button">Show deviations (${stats.deviations.length})</button>
+        </div>`;
+      }
+    }
+
+    html += `</div>`;
+  }
+
+  html += `<div class="comparison-lines-list">`;
+  for (const line of lines) {
+    const isActive = session && session.activeLineId === line.id;
+    html += `<div class="comparison-line-item ${isActive ? "active" : ""}">
+      <div class="comparison-line-label">${CMT.escapeHtml(line.name)}</div>
+      <div class="comparison-line-meta">
+        <span class="hint">${line.uciMoves.length} moves</span>
+        <button class="close-btn" data-lineid="${line.id}" title="Remove line">✕</button>
+      </div>
+      ${isActive ? '<span class="hint">active</span>' : ''}
+    </div>`;
+  }
+  html += `</div></div>`;
+
+  el.innerHTML = html;
+
+  // Wire events
+  for (const btn of el.querySelectorAll(".close-btn")) {
+    btn.addEventListener("click", () => {
+      const lineId = btn.dataset.lineid;
+      CMT.removeComparisonLine(lineId);
+      renderComparisonPanel();
+      renderList();
+    });
+  }
+
+  const showBtn = el.querySelector("#showDeviations");
+  if (showBtn) {
+    showBtn.addEventListener("click", () => {
+      comparisonShowDeviations = !comparisonShowDeviations;
+      renderComparisonDeviations();
+    });
+  }
+}
+
+function renderComparisonDeviations() {
+  const el = $("comparisonDeviations");
+  if (!el) return;
+
+  const stats = CMT.comparison.session ? CMT.getComparisonStats() : null;
+  if (!stats || !stats.deviations.length) {
+    el.innerHTML = "";
+    return;
+  }
+
+  if (!comparisonShowDeviations) {
+    el.innerHTML = "";
+    return;
+  }
+
+  let html = `<div class="comparison-deviations">
+    <h4>Deviations from loaded line</h4>
+    <table class="comparison-dev-table">
+      <thead><tr>
+        <th>Move #</th><th>Position</th><th>Expected</th><th>Played</th><th></th>
+      </tr></thead>
+      <tbody>`;
+
+  for (const dev of stats.deviations) {
+    html += `<tr>
+      <td>${dev.moveNo}</td>
+      <td class="hint">${dev.posKey.slice(0, 8)}…</td>
+      <td><b>${CMT.escapeHtml(dev.expectedSan)}</b></td>
+      <td><b>${CMT.escapeHtml(dev.actualSan)}</b></td>
+      <td><button class="sm-btn" data-poskey="${dev.posKey}">View</button></td>
+    </tr>`;
+  }
+
+  html += `</tbody></table></div>`;
+  el.innerHTML = html;
+
+  for (const btn of el.querySelectorAll(".sm-btn")) {
+    btn.addEventListener("click", () => {
+      // User could click to jump to deviation position in analysis view
+      onStatus("Deviation position noted. Review in analysis.");
+    });
+  }
+}
+
+async function openComparisonImport() {
+  const el = $("comparisonImport");
+  if (!el) return;
+  el.hidden = false;
+  $("comparisonLineInput").focus();
+}
+
+function closeComparisonImport() {
+  const el = $("comparisonImport");
+  if (!el) return;
+  el.hidden = true;
+  $("comparisonLineInput").value = "";
+}
+
+async function addComparisonLine() {
+  const text = $("comparisonLineInput").value.trim();
+  const label = $("comparisonLineLabel").value.trim();
+  if (!text) {
+    onStatus("Paste opening moves (PGN or SAN format)");
+    return;
+  }
+
+  try {
+    const line = CMT.importComparisonLine(text, label || undefined);
+    renderComparisonPanel();
+    renderList();
+    closeComparisonImport();
+    onStatus(`Added line: ${line.name} (${line.uciMoves.length} moves)`);
+
+    // Auto-init session if not already active
+    if (!CMT.comparison.session && CMT.comparison.lines.length > 0) {
+      CMT.initComparisonSession(CMT.comparison.lines.map((l) => l.id));
+      renderComparisonPanel();
+    }
+  } catch (e) {
+    onStatus("Invalid line: " + e.message);
+  }
+}
+
 // ----------------------------- keyboard -----------------------------
 function onKeydown(e) {
   const tag = (e.target.tagName || "").toLowerCase();
@@ -1253,6 +1450,7 @@ function init() {
 
   // Core flows
   CMT.loadCustomBook().then(() => { renderCustomBook(); return restoreSession(); });
+  CMT.loadComparisonLines().then(() => { renderComparisonPanel(); });
   $("run").addEventListener("click", () => run(null));
   $("heroRun") && $("heroRun").addEventListener("click", () => run(null));
   $("stop").addEventListener("click", () => { control.stop = true; onStatus("Stopping after current move…"); });
@@ -1285,6 +1483,24 @@ function init() {
     } catch (e) { onStatus("Could not parse line: " + e.message); }
   });
   $("lineInput").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("addLine").click(); } });
+
+  // Comparison mode
+  if ($("openComparison")) {
+    $("openComparison").addEventListener("click", () => {
+      openComparisonImport();
+    });
+  }
+  if ($("comparisonLineInput")) {
+    $("comparisonLineInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && e.ctrlKey) { e.preventDefault(); addComparisonLine(); }
+    });
+  }
+  if ($("addComparisonLine")) {
+    $("addComparisonLine").addEventListener("click", addComparisonLine);
+  }
+  if ($("closeComparisonImport")) {
+    $("closeComparisonImport").addEventListener("click", closeComparisonImport);
+  }
 
   $("clearCache").addEventListener("click", async () => {
     if (gradingPromise || isImporting) {
@@ -1356,7 +1572,8 @@ function init() {
       renderList();
       onStatus(`Loaded ${summary.positions} positions`
         + (summary.evals ? ` + ${summary.evals} cached evals` : "")
-        + (summary.customGroups ? ` + ${summary.customGroups} line group(s)` : "")
+        + (summary.customGroups ? ` + ${summary.customGroups} custom line group(s)` : "")
+        + (summary.comparisonLines ? ` + ${summary.comparisonLines} comparison line(s)` : "")
         + (summary.themes ? " + themes" : "")
         + " from file.");
     } catch (err) {

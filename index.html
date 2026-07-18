@@ -160,6 +160,24 @@ try {
   </details>
 
   <details>
+    <summary>Comparison mode: study custom openings</summary>
+    <p class="hint">Load opening lines you're studying. During analysis, track which positions you deviate from your prepared lines and see statistics on your consistency.</p>
+    <div class="linerow">
+      <button id="openComparison" type="button" class="primary">Add comparison line</button>
+    </div>
+    <div id="comparisonImport" class="comparison-import" hidden>
+      <input id="comparisonLineLabel" type="text" placeholder="Line name (e.g., Najdorf 6.Bg5)" spellcheck="false" />
+      <textarea id="comparisonLineInput" placeholder="Paste PGN or moves (e.g., 1.e4 c5 2.Nf3 d6 3.d4 cxd4...)" spellcheck="false" style="min-height: 80px; font-family: monospace; font-size: 12px;"></textarea>
+      <div class="btnrow">
+        <button id="addComparisonLine" type="button" class="primary">Add line</button>
+        <button id="closeComparisonImport" type="button">Cancel</button>
+      </div>
+    </div>
+    <div id="comparisonPanel" class="comparison-panel"></div>
+    <div id="comparisonDeviations" class="comparison-deviations"></div>
+  </details>
+
+  <details>
     <summary>Appearance</summary>
     <label class="chip check wide"><input type="checkbox" id="useSystem" checked /><span>Use system light/dark setting</span></label>
     <div class="set-grid">
