@@ -457,6 +457,24 @@ function courseTag(r) {
   return `<span class="opening">${CMT.escapeHtml(r.courseName || "Course")}</span>${warn}`;
 }
 
+// "Chapter 3 · Study 2: …" labels for a position, from the bundled course
+// data, plus a chessly.com link. Empty string when unknown.
+function studyLineHtml(courseIds, posKey) {
+  const course = CMT.activeCourses().find((c) => (courseIds || []).includes(c.id));
+  if (!course) return "";
+  const entry = course.positions[posKey];
+  const names = ((entry && entry.studies) || [])
+    .map((sid) => (course.studies || {})[sid])
+    .filter(Boolean)
+    .map((st) => {
+      const ch = (course.chapters || []).find((c) => c.id === st.chapterId);
+      return ch ? `${ch.name.split(":")[0]} · ${st.name}` : st.name;
+    });
+  const link = course.url ? ` <a href="${course.url}" target="_blank" rel="noopener">course ↗</a>` : "";
+  if (!names.length) return link ? `<p class="hint">${link}</p>` : "";
+  return `<p class="hint">Covered in: ${names.slice(0, 3).map((n) => CMT.escapeHtml(n)).join("; ")}${names.length > 3 ? ` (+${names.length - 3} more)` : ""}${link}</p>`;
+}
+
 function renderRepList() {
   if (!lastRep) {
     currentList = [];
@@ -1514,6 +1532,7 @@ function selectUserDev(r, cardEl) {
       </div>
     </div>
     <p class="hint">Course continues with <b>${expectedSans(r)}</b>.</p>
+    ${studyLineHtml(r.courseIds, r.key)}
     <table class="hist">
       <thead><tr><th>What you played instead</th><th>#</th><th>Win</th><th></th><th></th></tr></thead>
       <tbody>${histRows}</tbody>
@@ -1566,6 +1585,7 @@ function selectOppDev(g, cardEl) {
         ${g.url ? `<a href="${g.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
       </div>
     </div>
+    ${studyLineHtml(g.courseIds, CMT.posKey(g.prevFen))}
     ${g.positions.length ? `
     <p class="hint">Your replies over the next moves (click one to load it):</p>
     <table class="hist">
