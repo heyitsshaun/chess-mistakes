@@ -31,6 +31,8 @@ const bg = { running: false, control: { stop: false }, priority: [] };
 // When a sub-view (game viewer, games list, explorer) is open it owns the
 // keyboard: map of e.key → handler. null = normal list navigation.
 let activePanelKeys = null;
+// Per-position drill record, persisted: key → {plays, fails, lastOk, lastAt}
+let drillHistory = {};
 const MODE_KEY = "cmt-mode";
 const DRILL_PREFS_KEY = "cmt-drill-prefs";
 const drillState = {
@@ -531,7 +533,33 @@ function normalizeDrillConfig(raw) {
     minMistakeShare,
     skipFirst: Math.max(0, Math.floor(Number(raw.skipFirst) || 0)),
     limit,
+    focusWeak: !!raw.focusWeak,
   };
+}
+
+// 0 = failed/revealed last time, 1 = never drilled, 2 = solved last time.
+function drillWeakBucket(key) {
+  const h = drillHistory[key];
+  if (!h) return 1;
+  return h.lastOk ? 2 : 0;
+}
+
+// Persist the outcomes of the round that just ended (or was exited).
+function recordDrillOutcomes() {
+  let changed = false;
+  for (const [key, o] of drillState.outcomes) {
+    const resolved = o.solved || o.revealed || o.skipped;
+    if (!resolved) continue;
+    const ok = o.solved && !o.revealed;
+    const h = drillHistory[key] || { plays: 0, fails: 0 };
+    h.plays++;
+    if (!ok) h.fails++;
+    h.lastOk = ok;
+    h.lastAt = Date.now();
+    drillHistory[key] = h;
+    changed = true;
+  }
+  if (changed) CMT.storage.set("sessions", "drillHistory", drillHistory);
 }
 
 function currentDrillConfig() {
@@ -550,6 +578,7 @@ function setupDrillConfig() {
     minMistakeShare: (+$("drillMinRate").value || 0) / 100,
     skipFirst: +$("hideBefore").value || 0,
     limit: $("drillLimit").value === "all" ? null : +$("drillLimit").value,
+    focusWeak: $("drillFocusWeak").checked,
   });
 }
 
@@ -608,6 +637,7 @@ function loadDrillPrefs() {
     $("minOcc").value = config.minOccurrences;
     $("flagShare").value = config.minMistakeShare;
     $("drillLimit").value = config.limit == null ? "all" : String(config.limit);
+    $("drillFocusWeak").checked = config.focusWeak;
   } catch (e) { /* ignore malformed local preferences */ }
 }
 
@@ -617,6 +647,7 @@ function saveDrillPrefs(config) {
       minOccurrences: config.minOccurrences,
       minMistakeShare: config.minMistakeShare,
       limit: config.limit,
+      focusWeak: config.focusWeak,
     }));
   } catch (e) { /* preferences are optional */ }
 }
@@ -671,7 +702,15 @@ function setDrillHistoryState() {
 }
 
 function beginDrillRound(sourcePositions, config, preserveHistory) {
-  const shuffled = CMT.shuffleCopy(sourcePositions);
+  let shuffled = CMT.shuffleCopy(sourcePositions);
+  // "Focus weak spots": still shuffled, but failed-last-time positions come
+  // before unseen ones, which come before solved-last-time ones.
+  if (config.focusWeak) {
+    shuffled = shuffled
+      .map((r, i) => [drillWeakBucket(r.key), i, r])
+      .sort((a, b) => a[0] - b[0] || a[1] - b[1])
+      .map((x) => x[2]);
+  }
   const chosen = config.limit ? shuffled.slice(0, config.limit) : shuffled;
   if (!chosen.length) return false;
 
@@ -844,6 +883,7 @@ function advanceDrill() {
 
 function finishDrill() {
   if (!drillState.active) return;
+  recordDrillOutcomes();
   interactionVersion++;
   drillState.complete = true;
   drillState.navigating = false;
@@ -902,6 +942,7 @@ function requestExitDrill(openSetup) {
 
 function exitDrillNow() {
   if (!drillState.active) return;
+  recordDrillOutcomes();
   const openSetup = drillState.openSetupAfterExit;
   interactionVersion++;
   document.body.classList.remove("drill-active");
@@ -2258,6 +2299,9 @@ function init() {
       onStatus(`Added course “${course.name}” (${Object.keys(course.positions).length} positions). Re-run the analysis to use it.`);
     } catch (err) { onStatus("Could not parse lines: " + err.message); }
   });
+
+  // Drill history (which positions you've solved/failed across sessions)
+  CMT.storage.get("sessions", "drillHistory").then((h) => { if (h) drillHistory = h; });
 
   // Core flows
   CMT.loadCustomBook().then(() => { renderCustomBook(); return restoreSession(); });
