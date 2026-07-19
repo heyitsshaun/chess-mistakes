@@ -212,6 +212,23 @@ function check(name, fn) {
     doc.getElementById("explClose").click();
   });
 
+  check("summary strip, course filter, intentional marking present", () => {
+    H.renderList();
+    assert.ok(doc.querySelector(".rep-summary"), "summary strip missing");
+    assert.ok(doc.querySelector(".rep-summary").textContent.includes("3"), "games count missing");
+    const cf = doc.getElementById("courseFilter");
+    assert.strictEqual(cf.options.length, 6, "expected All + 5 courses");
+    // course filter narrows to Owen's-only deviations (all of ours are)
+    cf.value = [...cf.options].find((o) => o.textContent.includes("Owen")).value;
+    H.renderList();
+    assert.ok(doc.querySelectorAll("#results .card").length >= 1);
+    cf.value = "all";
+    H.renderList();
+    // intentional button exists on user-dev panel
+    [...doc.querySelectorAll("#results .card")].find((c) => c.textContent.includes("I deviated")).click();
+    assert.ok(doc.querySelector(".devig"), "intentional button missing");
+  });
+
   check("legacy mode toggle keeps working", () => {
     doc.getElementById("modeLegacy").click();
     assert.ok(doc.body.classList.contains("mode-legacy"));

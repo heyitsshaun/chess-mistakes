@@ -1595,6 +1595,7 @@ function selectOppDev(g, cardEl) {
         <button id="showBest" ${first && first.best ? "" : "disabled"}>Show best</button>
         <button id="resetBoard">Reset</button>
         <button id="toExplorer" title="Open this deviation in the line explorer">Explore</button>
+        <button id="drillGroup" title="Drill just your replies to this deviation" ${g.positions.some((p) => p.graded && p.best) ? "" : "disabled"}>Drill these</button>
         <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
         ${g.url ? `<a href="${g.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
       </div>
@@ -1609,6 +1610,13 @@ function selectOppDev(g, cardEl) {
   renderBoard();
   wireDetailCommon(first || g);
   const reopenGroup = () => selectOppDev(g, cardEl);
+  const dg = $("drillGroup");
+  if (dg) dg.addEventListener("click", () => {
+    if (gradingPromise || isRunning) return;
+    const pool = g.positions.filter((p) => p.graded && p.best);
+    if (!pool.length) return;
+    beginDrillRound(pool, normalizeDrillConfig({ minOccurrences: 1, minMistakeShare: 0, focusWeak: true }), false);
+  });
   const gg = $("groupGames");
   if (gg) gg.addEventListener("click", () => openGamesList({
     title: `Games where they played ${g.theirMove.san}`,
