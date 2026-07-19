@@ -28,6 +28,9 @@ let gameById = new Map();      // id → GameRec
 let posIndexCache = null;      // lazy posKey index for the explorer
 // Background engine grading: one queue, priority for whatever the user opens.
 const bg = { running: false, control: { stop: false }, priority: [] };
+// When a sub-view (game viewer, games list, explorer) is open it owns the
+// keyboard: map of e.key → handler. null = normal list navigation.
+let activePanelKeys = null;
 const MODE_KEY = "cmt-mode";
 const DRILL_PREFS_KEY = "cmt-drill-prefs";
 const drillState = {
@@ -730,6 +733,7 @@ function showDrillPosition() {
   }
 
   interactionVersion++;
+  activePanelKeys = null;
   currentPos = r;
   boardState.chess = new Chess(r.fen);
   boardState.orient = r.color;
@@ -889,6 +893,7 @@ function exitDrillNow() {
   drillState.navigating = false;
   drillState.exiting = false;
   currentPos = null;
+  activePanelKeys = null;
   boardState.chess = null;
   boardState.best = null;
   boardState.locked = false;
@@ -1060,6 +1065,7 @@ function selectPosition(r, cardEl) {
   if (r.kind === "opp-dev") return selectOppDev(r, cardEl);
   if (r.kind === "opp-window") return selectOppWindow(r);
   interactionVersion++;
+  activePanelKeys = null;
   currentPos = r;
   document.querySelectorAll(".card").forEach((c) => c.classList.remove("active"));
   if (cardEl) cardEl.classList.add("active");
@@ -1187,6 +1193,7 @@ function openGamesList(opts) {
       <tbody>${rows}</tbody>
     </table>` : '<p class="hint">No games on record for this move (imported results without game data?).</p>'}
     <p class="hint">Click a game to step through its moves.</p>`;
+  activePanelKeys = { Escape: opts.back };
   $("glBack").addEventListener("click", opts.back);
   document.querySelectorAll(".grow").forEach((row) => {
     const open = () => {
@@ -1258,11 +1265,21 @@ function openGameViewer(gameId, back, jumpPly) {
     if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
   };
   sync();
+  const nav = {
+    start: () => { ply = 0; sync(); },
+    prev: () => { ply = Math.max(0, ply - 1); sync(); },
+    next: () => { ply = Math.min(g._sans.length, ply + 1); sync(); },
+    end: () => { ply = g._sans.length; sync(); },
+  };
+  activePanelKeys = {
+    ArrowLeft: nav.prev, ArrowRight: nav.next, ArrowUp: nav.prev, ArrowDown: nav.next,
+    Home: nav.start, End: nav.end, Escape: back,
+  };
   $("gvBack").addEventListener("click", back);
-  $("gvStart").addEventListener("click", () => { ply = 0; sync(); });
-  $("gvPrev").addEventListener("click", () => { ply = Math.max(0, ply - 1); sync(); });
-  $("gvNext").addEventListener("click", () => { ply = Math.min(g._sans.length, ply + 1); sync(); });
-  $("gvEnd").addEventListener("click", () => { ply = g._sans.length; sync(); });
+  $("gvStart").addEventListener("click", nav.start);
+  $("gvPrev").addEventListener("click", nav.prev);
+  $("gvNext").addEventListener("click", nav.next);
+  $("gvEnd").addEventListener("click", nav.end);
   document.querySelectorAll("#gvMoves .mv").forEach((b) =>
     b.addEventListener("click", () => { ply = +b.dataset.ply; sync(); }));
   openTrainer();
@@ -1309,6 +1326,7 @@ function activateCard(cardEl) {
 
 function setupBoardFor(r) {
   interactionVersion++;
+  activePanelKeys = null;
   currentPos = r;
   boardState.chess = new Chess(r.fen);
   boardState.orient = r.color;
@@ -1866,6 +1884,7 @@ function openExplorer() {
 
 function closeExplorer() {
   currentPos = null;
+  activePanelKeys = null;
   $("detail").innerHTML = '<p class="empty">Select a position to review and retry it.</p>';
   renderList();
 }
@@ -1955,6 +1974,10 @@ function renderExplorer() {
     </table>` : ""}`;
 
   renderBoard();
+  activePanelKeys = {
+    ArrowLeft: () => { if (explState.sans.length) { explState.sans.pop(); renderExplorer(); } },
+    Escape: closeExplorer,
+  };
   $("explClose").addEventListener("click", closeExplorer);
   $("explCourse").addEventListener("change", (e) => {
     explState.courseId = e.target.value;
@@ -2016,9 +2039,15 @@ function onKeydown(e) {
     if ($("drawer").classList.contains("show")) { setDrawer(false); return; }
     if (drillState.active) { requestExitDrill(false); return; }
     if (!$("drillSetup").hidden) { closeDrillSetup(); return; }
+    if (activePanelKeys && activePanelKeys.Escape) { activePanelKeys.Escape(); return; }
     if (document.body.classList.contains("trainer-open")) { requestCloseTrainer(); return; }
   }
   if (["input", "textarea", "select", "button", "a"].includes(tag) || e.target.isContentEditable) return;
+  if (activePanelKeys) { // sub-view owns the keyboard
+    const fn = activePanelKeys[e.key];
+    if (fn) { e.preventDefault(); fn(); }
+    return;
+  }
   if (drillState.active) {
     if (drillState.complete || gradingPromise) return;
     if ((e.key === "ArrowDown" || e.key === "n" || e.key === "N") && !e.repeat) {
