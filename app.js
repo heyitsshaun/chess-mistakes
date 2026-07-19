@@ -2001,9 +2001,7 @@ function init() {
   $("pieceSet").addEventListener("change", async (e) => {
     const before = Pieces.id();
     const got = await Pieces.activate(e.target.value);
-    if (got === "classic" && e.target.value === "cburnett") {
-      onStatus("Couldn't fetch the lichess pieces (offline?). Using classic set for now.");
-    } else if (got === "classic" && e.target.value === "custom") {
+    if (got === "classic" && e.target.value === "custom") {
       onStatus("No custom pieces uploaded yet — pick 12 files below.");
       e.target.value = before;
     }

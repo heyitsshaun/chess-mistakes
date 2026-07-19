@@ -1,0 +1,10 @@
+The cburnett chess piece SVGs in this directory were created by Colin M.L.
+Burnett and are used by lichess.org. They are vendored here from
+https://github.com/lichess-org/lila (public/piece/cburnett/).
+
+They are licensed under the GNU General Public License version 2 or later
+(GPLv2+), with the original author's permission to use them under the GPL.
+
+Full license text: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+Source: https://en.wikipedia.org/wiki/User:Cburnett/GFDL_images/Chess

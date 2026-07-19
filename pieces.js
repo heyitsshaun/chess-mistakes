@@ -1,15 +1,20 @@
-/* Piece set manager. Default is lichess's cburnett set (GPL, from the
- * lichess-org/lila repo via jsDelivr), fetched once and cached in IndexedDB
- * as data URLs so later loads work offline. "Classic" is the built-in
- * geometric fallback (also used automatically if the first fetch fails).
+/* Piece set manager.
+ *
+ * "cburnett" is lichess's piece set (GPLv2+), vendored into pieces/cburnett/ —
+ * see pieces/cburnett/LICENSE. The files ship with the app, so the set loads
+ * offline, on first run, with no network and no CDN. (It used to be fetched
+ * from jsDelivr, which silently 403'd — "Package size exceeded the configured
+ * limit of 50 MB" — so cburnett could never actually be selected.)
+ *
+ * "classic" is the built-in geometric fallback drawn inline by app.js.
  * Custom sets are 12 uploaded SVG/PNG files named wK wQ wR wB wN wP
- * bK bQ bR bB bN bP (any extension).
+ * bK bQ bR bB bN bP (any extension), stored in IndexedDB.
  */
 "use strict";
 
 const Pieces = (() => {
   const CODES = ["wK", "wQ", "wR", "wB", "wN", "wP", "bK", "bQ", "bR", "bB", "bN", "bP"];
-  const CDN = "https://cdn.jsdelivr.net/gh/lichess-org/lila/public/piece/cburnett/";
+  const BUNDLED = { cburnett: "pieces/cburnett/" };
   const PREF_KEY = "cmt-piece-set";
   let active = { id: "classic", urls: null };
   const listeners = [];
@@ -17,28 +22,23 @@ const Pieces = (() => {
   const code = (pc) => (pc === pc.toUpperCase() ? "w" : "b") + pc.toUpperCase();
   const notify = () => listeners.forEach((fn) => fn(active.id));
 
-  async function fetchCburnett() {
+  // Bundled sets are plain relative URLs — the browser caches them like any
+  // other asset, so there's nothing to prefetch or mirror into IndexedDB.
+  function bundledUrls(id) {
+    const base = BUNDLED[id];
     const urls = {};
-    await Promise.all(CODES.map(async (c) => {
-      const r = await fetch(CDN + c + ".svg");
-      if (!r.ok) throw new Error("HTTP " + r.status + " for " + c);
-      const text = await r.text();
-      urls[c] = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(text)));
-    }));
+    for (const c of CODES) urls[c] = base + c + ".svg";
     return urls;
   }
 
   async function activate(id) {
     if (id === "classic") {
       active = { id: "classic", urls: null };
+    } else if (BUNDLED[id]) {
+      active = { id, urls: bundledUrls(id) };
     } else {
-      let urls = await CMT.storage.get("sessions", "pieces-" + id);
-      if (!urls && id === "cburnett") {
-        try {
-          urls = await fetchCburnett();
-          CMT.storage.set("sessions", "pieces-cburnett", urls);
-        } catch (e) { urls = null; /* offline first run → classic fallback */ }
-      }
+      // Custom (or anything unknown): only available if it's in IndexedDB.
+      const urls = await CMT.storage.get("sessions", "pieces-" + id);
       active = urls ? { id, urls } : { id: "classic", urls: null };
     }
     try { localStorage.setItem(PREF_KEY, active.id); } catch (e) { /* optional */ }
