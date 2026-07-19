@@ -202,15 +202,34 @@ try {
     <summary>Appearance</summary>
     <div class="set-grid">
       <label>Chess pieces<select id="pieceSet">
+        <option value="chesscom">Chess.com</option>
         <option value="cburnett">Lichess (cburnett)</option>
         <option value="classic">Classic (built-in)</option>
         <option value="custom">Custom</option>
       </select></label>
+      <label>Board<select id="boardSet"></select></label>
     </div>
     <div class="btnrow wrap">
       <label class="filebtn">Upload custom pieces<input id="pieceFiles" type="file" accept=".svg,.png" hidden multiple /></label>
+      <button id="newBoard" type="button">New board</button>
+      <button id="editBoard" type="button" hidden>Edit board</button>
     </div>
     <p class="hint">Custom pieces: select 12 SVG/PNG files named wK, wQ, wR, wB, wN, wP, bK, bQ, bR, bB, bN, bP (e.g. wK.svg).</p>
+    <form id="boardEditor" class="theme-editor" hidden>
+      <div class="set-grid">
+        <label>Name<input id="beName" type="text" /></label>
+      </div>
+      <div class="te-fields">
+        <label><span>Light squares</span><input id="beLight" type="color" /></label>
+        <label><span>Dark squares</span><input id="beDark" type="color" /></label>
+        <label><span>Selection</span><input id="beSel" type="color" /></label>
+      </div>
+      <div class="btnrow">
+        <button type="button" id="beSave" class="primary">Save board</button>
+        <button type="button" id="beDelete" class="danger">Delete</button>
+        <button type="button" id="beClose">Close editor</button>
+      </div>
+    </form>
     <label class="chip check wide"><input type="checkbox" id="useSystem" checked /><span>Use system light/dark setting</span></label>
     <div class="set-grid">
       <label>Light theme<select id="lightTheme"></select></label>
@@ -253,6 +272,7 @@ try {
 <script src="courses-data.js"></script>
 <script src="core.js"></script>
 <script src="themes.js"></script>
+<script src="boards.js"></script>
 <script src="pieces.js"></script>
 <script src="app.js"></script>
 <script src="views.js"></script>

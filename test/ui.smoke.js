@@ -29,6 +29,7 @@ const combined = [
   "courses-data.js",
   "core.js",
   "themes.js",
+  "boards.js",
   "pieces.js",
   "app.js",
   "views.js",

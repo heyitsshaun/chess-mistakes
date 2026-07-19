@@ -39,7 +39,12 @@ function boot(prefValue) {
   const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/", runScripts: "outside-only" });
   const { window } = dom;
   window.fetch = async () => { throw new Error("network disabled"); };
-  if (prefValue !== undefined) window.localStorage.setItem("cmt-piece-set", prefValue);
+  if (prefValue !== undefined) {
+    window.localStorage.setItem("cmt-piece-set", prefValue);
+    // A stored pref implies a profile that has already been through the
+    // one-time chesscom default migration; set the flag so init respects it.
+    window.localStorage.setItem("cmt-piece-set-v2", "1");
+  }
   // `const Pieces = ...` is lexically scoped to its own eval() call, so the stub,
   // the source, and the export have to go through as a single eval (same trick
   // test/ui.smoke.js uses to emulate shared <script> scope).
@@ -107,7 +112,32 @@ console.log("piece set manager (offline)");
   {
     const w = boot();
     await w.eval("Pieces.init()");
-    check("default on a fresh profile is cburnett, and it sticks", () => {
+    check("default on a fresh profile is chesscom, and it sticks", () => {
+      assert.strictEqual(w.eval("Pieces.id()"), "chesscom");
+      assert.strictEqual(w.localStorage.getItem("cmt-piece-set"), "chesscom");
+    });
+    check("chesscom urls point at the chess.com CDN (lowercase, png) with no network", () => {
+      assert.strictEqual(w.eval("Pieces.url('K')"), "https://assets-themes.chess.com/image/ejgfv/150/wk.png");
+      assert.strictEqual(w.eval("Pieces.url('q')"), "https://assets-themes.chess.com/image/ejgfv/150/bq.png");
+    });
+  }
+
+  // One-time migration: old default (cburnett) without the v2 flag moves over.
+  {
+    const w = boot();
+    w.localStorage.setItem("cmt-piece-set", "cburnett"); // no v2 flag
+    await w.eval("Pieces.init()");
+    check("pre-migration cburnett pref migrates to chesscom once", () => {
+      assert.strictEqual(w.eval("Pieces.id()"), "chesscom");
+      assert.strictEqual(w.localStorage.getItem("cmt-piece-set-v2"), "1");
+    });
+  }
+
+  // …but an explicit post-migration choice of cburnett is respected.
+  {
+    const w = boot("cburnett"); // boot sets the v2 flag alongside the pref
+    await w.eval("Pieces.init()");
+    check("post-migration cburnett choice sticks", () => {
       assert.strictEqual(w.eval("Pieces.id()"), "cburnett");
     });
   }

@@ -926,6 +926,7 @@
     extra = extra || {};
     const evals = await storage.entries("evals");
     const themes = await storage.get("sessions", "themes"); // saved by the UI layer
+    const boards = await storage.get("sessions", "boards"); // saved by the UI layer
     const drillHistory = await storage.get("sessions", "drillHistory");
     return {
       drillHistory: drillHistory || null,
@@ -939,6 +940,7 @@
       evals,
       customBook: customBook.groups,
       themes: themes || null,
+      boards: boards || null,
     };
   }
 
@@ -970,6 +972,10 @@
     if (data.themes && typeof data.themes === "object") {
       await storage.set("sessions", "themes", data.themes);
       summary.themes = true; // UI layer re-reads and applies after import
+    }
+    if (data.boards && typeof data.boards === "object") {
+      await storage.set("sessions", "boards", data.boards);
+      summary.boards = true; // UI layer re-reads and applies after import
     }
     if (data.drillHistory && typeof data.drillHistory === "object") {
       await storage.set("sessions", "drillHistory", data.drillHistory);

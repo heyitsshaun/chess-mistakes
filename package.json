@@ -4,7 +4,7 @@
   "private": true,
   "description": "Finds positions from your chess.com games where you repeatedly play sub-optimal moves, and lets you drill them.",
   "scripts": {
-    "test": "node test/core.test.js && node test/pieces.test.js && node test/ui.smoke.js"
+    "test": "node test/core.test.js && node test/pieces.test.js && node test/boards.test.js && node test/ui.smoke.js"
   },
   "devDependencies": {
     "chess.js": "0.10.3",

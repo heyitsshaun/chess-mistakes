@@ -1817,7 +1817,40 @@ function previewEditing() {
 function closeThemeEditor() {
   editingTheme = null;
   $("themeEditor").hidden = true;
-  Themes.apply(); // restore the real active theme
+  Themes.apply(); // restore the real active theme (Boards re-overrides via onChange)
+}
+
+// ----------------------------- board UI -----------------------------
+let editingBoard = null;
+
+function renderBoardUI() {
+  const sel = $("boardSet");
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const b of Boards.all()) {
+    const o = document.createElement("option");
+    o.value = b.id; o.textContent = b.name;
+    sel.appendChild(o);
+  }
+  sel.value = Boards.id();
+  $("editBoard").hidden = Boards.active().builtin;
+}
+
+function openBoardEditor(board) {
+  if (!board || board.builtin) return;
+  editingBoard = board;
+  Boards.activate(board.id); // live preview edits on the real board
+  renderBoardUI();
+  $("boardEditor").hidden = false;
+  $("beName").value = board.name;
+  $("beLight").value = board.colors.sqLight;
+  $("beDark").value = board.colors.sqDark;
+  $("beSel").value = board.colors.sqSel;
+}
+
+function closeBoardEditor() {
+  editingBoard = null;
+  $("boardEditor").hidden = true;
 }
 
 // ----------------------------- drawer -----------------------------
@@ -1983,6 +2016,40 @@ function init() {
     renderThemeUI();
   });
   $("teClose").addEventListener("click", closeThemeEditor);
+
+  // Board (square colors) — its own setting, applied over the active theme
+  Boards.init();
+  renderBoardUI();
+  $("boardSet").addEventListener("change", (e) => {
+    Boards.activate(e.target.value);
+    renderBoardUI();
+    if (editingBoard && Boards.id() !== editingBoard.id) closeBoardEditor();
+  });
+  $("newBoard").addEventListener("click", () => openBoardEditor(Boards.create()));
+  $("editBoard").addEventListener("click", () => {
+    const b = Boards.active();
+    if (!b.builtin) openBoardEditor(b);
+  });
+  for (const [inputId, key] of [["beLight", "sqLight"], ["beDark", "sqDark"], ["beSel", "sqSel"]]) {
+    $(inputId).addEventListener("input", () => {
+      if (!editingBoard) return;
+      editingBoard.colors[key] = $(inputId).value;
+      Boards.save(editingBoard); // persists + live-applies
+    });
+  }
+  $("beSave").addEventListener("click", () => {
+    if (!editingBoard) return;
+    editingBoard.name = $("beName").value.trim() || editingBoard.name;
+    Boards.save(editingBoard);
+    closeBoardEditor();
+    renderBoardUI();
+  });
+  $("beDelete").addEventListener("click", () => {
+    if (editingBoard) Boards.remove(editingBoard.id);
+    closeBoardEditor();
+    renderBoardUI();
+  });
+  $("beClose").addEventListener("click", closeBoardEditor);
 
   // Drawer
   $("openSettings").addEventListener("click", () => setDrawer(true));
@@ -2157,6 +2224,7 @@ function init() {
     if (!lastResults && !lastRep) return;
     onStatus("Exporting backup…");
     await CMT.storage.set("sessions", "themes", Themes.data());
+    await CMT.storage.set("sessions", "boards", Boards.data());
     const payload = await CMT.buildExport($("username").value, readSettings(), lastResults || [], { rep: lastRep, mode: appMode });
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
     const a = document.createElement("a");
@@ -2191,6 +2259,7 @@ function init() {
       setGameIndex(imported.gameIndex || null);
       if (summary.username) $("username").value = summary.username;
       if (data.themes) { Themes.importData(data.themes); renderThemeUI(); }
+      if (data.boards) { Boards.importData(data.boards); renderBoardUI(); }
       if (summary.mode) setMode(summary.mode, { silent: true });
       if (summary.drillHistory) CMT.storage.get("sessions", "drillHistory").then((h) => { if (h) drillHistory = h; });
       $("exportBtn").disabled = false;
@@ -2203,6 +2272,7 @@ function init() {
         + (summary.customGroups ? ` + ${summary.customGroups} custom line group(s)` : "")
         + (summary.courses ? ` + ${summary.courses} imported course(s)` : "")
         + (summary.themes ? " + themes" : "")
+        + (summary.boards ? " + board" : "")
         + " from file.");
     } catch (err) {
       onStatus("Could not read backup: " + err.message);
