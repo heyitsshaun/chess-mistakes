@@ -33,6 +33,9 @@ const bg = { running: false, control: { stop: false }, priority: [] };
 let activePanelKeys = null;
 // Per-position drill record, persisted: key → {plays, fails, lastOk, lastAt}
 let drillHistory = {};
+// Starred positions, persisted: Set of position keys (opp-dev groups star by
+// their group key, which also covers their window positions).
+let favorites = new Set();
 const MODE_KEY = "cmt-mode";
 const DRILL_PREFS_KEY = "cmt-drill-prefs";
 const drillState = {
@@ -368,6 +371,45 @@ function miniBoardSVG(fen, orient) {
   return svg;
 }
 
+// ----------------------------- favorites -----------------------------
+function favKeyOf(r) { return r.groupKey || r.key; }
+function isFavorite(r) { return favorites.has(favKeyOf(r)) || favorites.has(r.key); }
+function saveFavorites() { CMT.storage.set("sessions", "favorites", [...favorites]); }
+
+function toggleFavorite(key) {
+  if (favorites.has(key)) favorites.delete(key);
+  else favorites.add(key);
+  saveFavorites();
+  document.querySelectorAll(".favbtn").forEach((b) => { if (b.dataset.fav === key) paintFavBtn(b); });
+  const favOnly = $("favOnly");
+  if (favOnly && favOnly.checked && !drillState.active) renderList();
+  else refreshDrillAvailability();
+}
+
+function paintFavBtn(b) {
+  const on = favorites.has(b.dataset.fav);
+  b.classList.toggle("on", on);
+  b.textContent = on ? "★" : "☆";
+  b.setAttribute("aria-pressed", String(on));
+  b.title = on ? "Remove from favorites" : "Add to favorites";
+}
+
+function favBtnHtml(key, extraClass) {
+  const on = favorites.has(key);
+  return `<button type="button" class="favbtn${extraClass ? " " + extraClass : ""}${on ? " on" : ""}"
+    data-fav="${CMT.escapeHtml(key)}" aria-pressed="${on}" aria-label="Favorite position"
+    title="${on ? "Remove from favorites" : "Add to favorites"}">${on ? "★" : "☆"}</button>`;
+}
+
+function wireFavButtons(scope) {
+  (scope || document).querySelectorAll(".favbtn").forEach((b) => {
+    if (b._favWired) return;
+    b._favWired = true;
+    b.addEventListener("click", (e) => { e.stopPropagation(); toggleFavorite(b.dataset.fav); });
+    b.addEventListener("keydown", (e) => e.stopPropagation());
+  });
+}
+
 const GRADE_VARS = ["--best", "--excellent", "--good", "--inacc", "--mistake", "--blunder"];
 function pills(level, isBook, isIgnored) {
   let h = level == null
@@ -390,6 +432,7 @@ function renderList() {
   const hideBefore = +$("hideBefore").value || 0;
   CMT.recomputeFlags(lastResults, readSettings(), $("ignoreBook").checked, CMT.customBook.set);
   let list = lastResults.filter((r) => (showAll || r.flagged) && r.moveNo > hideBefore);
+  if ($("favOnly").checked) list = list.filter(isFavorite);
   list = CMT.sortResults(list, $("sortBy").value);
   currentList = list;
   refreshDrillAvailability();
@@ -420,11 +463,13 @@ function renderList() {
         <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(${sevColor})"></span></div>
         <div class="meta">bad ${(r.badShare * 100).toFixed(0)}% · score ${winCellHtml(positionGameIds(r))} · ${r.graded ? `avg loss ${r.avgCpl.toFixed(0)}cp · best <b>${CMT.escapeHtml(CMT.uciToSan(r.fen, r.best) || r.best || "?")}</b>` : '<span class="hint">grading…</span>'}</div>
       </div>
+      ${favBtnHtml(r.key, "cardfav")}
       <span class="chev">›</span>`;
     card.addEventListener("click", () => selectPosition(r, card));
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectPosition(r, card); } });
     el.appendChild(card);
   }
+  wireFavButtons(el);
 }
 
 // Union of a position's plays' game ids (for card-level win %).
@@ -495,6 +540,7 @@ function renderRepList() {
   const courseFilter = $("courseFilter").value;
   if (courseFilter !== "all") items = items.filter((r) => (r.courseIds || []).includes(courseFilter));
   items = items.filter((r) => (showAll || r.flagged) && r.moveNo > hideBefore);
+  if ($("favOnly").checked) items = items.filter(isFavorite);
   items = CMT.sortResults(items, $("sortBy").value);
   currentList = items;
   refreshDrillAvailability();
@@ -525,6 +571,7 @@ function renderRepList() {
           <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--mistake)"></span></div>
           <div class="meta">off-book ${(r.badShare * 100).toFixed(0)}% of ${r.total} visit${r.total === 1 ? "" : "s"} · score ${winCellHtml(positionGameIds(r))} · course: <b>${expectedSans(r)}</b></div>
         </div>
+        ${favBtnHtml(r.key, "cardfav")}
         <span class="chev">›</span>`;
     } else {
       const graded = r.positions.reduce((n, p) => n + p.total, 0);
@@ -537,12 +584,14 @@ function renderRepList() {
           <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--inacc)"></span></div>
           <div class="meta">${bad ? `<b>${bad}</b> of your ${graded} replies flagged` : graded ? `all ${graded} of your replies fine` : "replies not graded yet"} · score ${winCellHtml(r.gameIds)} · avg loss ${r.avgCpl.toFixed(0)}cp</div>
         </div>
+        ${favBtnHtml(r.key, "cardfav")}
         <span class="chev">›</span>`;
     }
     card.addEventListener("click", () => selectPosition(r, card));
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectPosition(r, card); } });
     el.appendChild(card);
   }
+  wireFavButtons(el);
   const leak = $("summaryLeak");
   if (leak) leak.addEventListener("click", () => {
     const r = lastRep.userDev.find((x) => x.key === leak.dataset.key);
@@ -567,6 +616,7 @@ function normalizeDrillConfig(raw) {
     skipFirst: Math.max(0, Math.floor(Number(raw.skipFirst) || 0)),
     limit,
     focusWeak: !!raw.focusWeak,
+    favOnly: !!raw.favOnly,
   };
 }
 
@@ -577,9 +627,12 @@ function drillWeakBucket(key) {
   return h.lastOk ? 2 : 0;
 }
 
-// Persist the outcomes of the round that just ended (or was exited).
+// Persist the outcomes of the round that just ended (or was exited): the
+// per-position aggregate ("focus weak spots" ordering) and an append-only
+// round record for the drill log (CMT.logDrillRound → stats over time).
 function recordDrillOutcomes() {
   let changed = false;
+  const items = [];
   for (const [key, o] of drillState.outcomes) {
     const resolved = o.solved || o.revealed || o.skipped;
     if (!resolved) continue;
@@ -591,8 +644,22 @@ function recordDrillOutcomes() {
     h.lastAt = Date.now();
     drillHistory[key] = h;
     changed = true;
+    const r = positionForDrillKey(key);
+    items.push({
+      key,
+      fen: r ? r.fen : null,
+      kind: (r && r.kind) || "engine",
+      moveNo: r ? r.moveNo : null,
+      color: r ? r.color : null,
+      courseIds: (r && r.courseIds) || [],
+      courseName: (r && r.courseName) || null,
+      opening: (r && r.opening) || null,
+      result: o.revealed ? "revealed" : o.solved ? (o.firstTry === true ? "first" : "recovered") : "skipped",
+      attempts: o.attempts,
+    });
   }
   if (changed) CMT.storage.set("sessions", "drillHistory", drillHistory);
+  if (items.length) CMT.logDrillRound({ mode: appMode, config: drillState.config, items });
 }
 
 function currentDrillConfig() {
@@ -612,21 +679,26 @@ function setupDrillConfig() {
     skipFirst: +$("hideBefore").value || 0,
     limit: $("drillLimit").value === "all" ? null : +$("drillLimit").value,
     focusWeak: $("drillFocusWeak").checked,
+    favOnly: $("drillFavOnly").checked,
   });
 }
 
 function computeDrillPool(config) {
+  let pool;
   if (appMode === "rep") {
     if (!lastRep) return [];
     CMT.recomputeRepertoireFlags(lastRep, readSettings(), CMT.customBook.set);
     const include = { all: "all", user: "user", opp: "opp" }[$("devFilter").value] || "all";
-    return CMT.repertoireDrillPool(lastRep, Object.assign({}, config, { include }))
+    pool = CMT.repertoireDrillPool(lastRep, Object.assign({}, config, { include }))
       .filter((r) => r.fen && (r.kind === "user-dev" ? r.answerUcis.length : r.best));
+  } else {
+    if (!lastResults || !lastResults.length) return [];
+    CMT.recomputeFlags(lastResults, readSettings(), $("ignoreBook").checked, CMT.customBook.set);
+    pool = CMT.filterDrillPositions(lastResults, config)
+      .filter((r) => r.fen && r.best);
   }
-  if (!lastResults || !lastResults.length) return [];
-  CMT.recomputeFlags(lastResults, readSettings(), $("ignoreBook").checked, CMT.customBook.set);
-  return CMT.filterDrillPositions(lastResults, config)
-    .filter((r) => r.fen && r.best);
+  if (config && config.favOnly) pool = pool.filter(isFavorite);
+  return pool;
 }
 
 function hasAnyResults() {
@@ -671,6 +743,7 @@ function loadDrillPrefs() {
     $("flagShare").value = config.minMistakeShare;
     $("drillLimit").value = config.limit == null ? "all" : String(config.limit);
     $("drillFocusWeak").checked = config.focusWeak;
+    $("drillFavOnly").checked = config.favOnly;
   } catch (e) { /* ignore malformed local preferences */ }
 }
 
@@ -681,6 +754,7 @@ function saveDrillPrefs(config) {
       minMistakeShare: config.minMistakeShare,
       limit: config.limit,
       focusWeak: config.focusWeak,
+      favOnly: config.favOnly,
     }));
   } catch (e) { /* preferences are optional */ }
 }
@@ -1218,6 +1292,7 @@ function selectPosition(r, cardEl) {
         <h2>${r.opening ? CMT.escapeHtml(r.opening) + " · " : ""}Move ${r.moveNo}</h2>
         <div class="statline">${r.phase} · ${r.color === "w" ? "White" : "Black"} to move · seen ${r.total}× · bad <span id="badPct">0%</span>${r.graded ? "" : ' · <span class="hint">grading…</span>'}</div>
       </div>
+      ${favBtnHtml(r.key, "detailfav")}
     </div>
     <div class="board-wrap">
       <div id="board" class="board"></div>
@@ -1235,6 +1310,7 @@ function selectPosition(r, cardEl) {
 
   renderBoard();
   countUp($("badPct"), Math.round(r.badShare * 100), "%");
+  wireFavButtons($("detail"));
 
   $("backBtn").addEventListener("click", () => {
     requestCloseTrainer();
@@ -1300,6 +1376,7 @@ function setupBoardFor(r) {
 }
 
 function wireDetailCommon(r) {
+  wireFavButtons($("detail"));
   const back = $("backBtn");
   if (back) back.addEventListener("click", requestCloseTrainer);
   const toExpl = $("toExplorer");
@@ -1310,6 +1387,13 @@ function wireDetailCommon(r) {
       ? lastRep.oppDev.find((g) => g.key === r.groupKey) || r
       : r;
     openInExplorer(target);
+  });
+  const toLines = $("toLines");
+  if (toLines) toLines.addEventListener("click", () => {
+    const target = r.kind === "opp-window" && lastRep
+      ? lastRep.oppDev.find((g) => g.key === r.groupKey) || r
+      : r;
+    openLinesOverlay(target);
   });
   const show = $("showBest");
   if (show) show.addEventListener("click", () => { if (!gradingPromise) showAnswerFor(r); });
@@ -1376,6 +1460,7 @@ function selectUserDev(r, cardEl) {
         <h2>${CMT.escapeHtml(r.courseName || "Course")}${r.multiCourse ? " ⚠" : ""} · Move ${r.moveNo}</h2>
         <div class="statline">${r.color === "w" ? "White" : "Black"} to move · you left the course here <span id="badPct">0%</span> of ${r.total} visit${r.total === 1 ? "" : "s"}</div>
       </div>
+      ${favBtnHtml(r.key, "detailfav")}
     </div>
     <div class="board-wrap">
       <div id="board" class="board"></div>
@@ -1383,6 +1468,7 @@ function selectUserDev(r, cardEl) {
       <div class="btnrow mobile-actions">
         <button id="showBest">Show course move</button>
         <button id="resetBoard">Reset</button>
+        <button id="toLines" title="See the course line to this position: rewind it, then explore the course's continuations">Course line</button>
         <button id="toExplorer" title="Open this position in the line explorer">Explore</button>
         <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
         ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
@@ -1436,6 +1522,7 @@ function selectOppDev(g, cardEl) {
         <div class="statline">Opponents played <b>${CMT.escapeHtml(g.theirMove.san)}</b> ${g.count}× (course prepares for ${theirExpected || "—"})
           · score ${winCellHtml(g.gameIds)} <button class="igbtn" id="groupGames">games</button></div>
       </div>
+      ${favBtnHtml(g.key, "detailfav")}
     </div>
     <div class="board-wrap">
       <div id="board" class="board"></div>
@@ -1443,6 +1530,7 @@ function selectOppDev(g, cardEl) {
       <div class="btnrow mobile-actions">
         <button id="showBest" ${first && first.best ? "" : "disabled"}>Show best</button>
         <button id="resetBoard">Reset</button>
+        <button id="toLines" title="See the course line to this deviation: rewind it, then explore the course's continuations">Course line</button>
         <button id="toExplorer" title="Open this deviation in the line explorer">Explore</button>
         <button id="drillGroup" title="Drill just your replies to this deviation" ${g.positions.some((p) => p.graded && p.best) ? "" : "disabled"}>Drill these</button>
         <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
@@ -1499,6 +1587,7 @@ function selectOppWindow(p, group) {
         <h2>After ${group ? "their <b>" + CMT.escapeHtml(group.theirMove.san) + "</b>" : "the deviation"} · Move ${p.moveNo}</h2>
         <div class="statline">${p.color === "w" ? "White" : "Black"} to move · seen ${p.total}× · bad <span id="badPct">0%</span></div>
       </div>
+      ${favBtnHtml(favKeyOf(p), "detailfav")}
     </div>
     <div class="board-wrap">
       <div id="board" class="board"></div>
@@ -2130,6 +2219,10 @@ function init() {
 
   // Drill history (which positions you've solved/failed across sessions)
   CMT.storage.get("sessions", "drillHistory").then((h) => { if (h) drillHistory = h; });
+  // Favorited positions
+  CMT.storage.get("sessions", "favorites").then((f) => {
+    if (Array.isArray(f) && f.length) { favorites = new Set(f); renderList(); }
+  });
 
   // Core flows
   CMT.loadCustomBook().then(() => { renderCustomBook(); return restoreSession(); });
@@ -2146,6 +2239,9 @@ function init() {
   for (const id of ["drillMinOcc", "drillMinRate", "drillLimit"]) {
     $(id).addEventListener(id === "drillLimit" ? "change" : "input", updateDrillPoolPreview);
   }
+  $("drillFavOnly").addEventListener("change", updateDrillPoolPreview);
+  $("favOnly").addEventListener("change", renderList);
+  $("openStats").addEventListener("click", () => openDrillStats());
 
   for (const [id, evt] of [
     ["showAll", "change"], ["sortBy", "change"], ["ignoreBook", "change"], ["hideBefore", "input"],
@@ -2262,6 +2358,7 @@ function init() {
       if (data.boards) { Boards.importData(data.boards); renderBoardUI(); }
       if (summary.mode) setMode(summary.mode, { silent: true });
       if (summary.drillHistory) CMT.storage.get("sessions", "drillHistory").then((h) => { if (h) drillHistory = h; });
+      if (summary.favorites) CMT.storage.get("sessions", "favorites").then((f) => { if (Array.isArray(f)) { favorites = new Set(f); renderList(); } });
       $("exportBtn").disabled = false;
       renderCustomBook();
       renderCourses();

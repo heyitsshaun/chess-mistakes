@@ -901,6 +901,108 @@
     saveCustomBook();
   }
 
+  // ------------------------------ drill log / metrics ------------------------------
+  // Append-only record of drill rounds. Each finished round is stored under its
+  // own key ("dlog:<id>") in the sessions store, so writing never rewrites
+  // history and the log grows without read-modify-write contention. Rounds are
+  // immutable once written; all aggregation happens at read time in
+  // drillMetrics(), so the presentation layer can change freely without a
+  // storage migration. Item shape (v1):
+  //   { key, fen, kind, moveNo, color, courseIds, courseName, opening,
+  //     result: 'first'|'recovered'|'revealed'|'skipped', attempts }
+  const DRILL_RESULT_SCORE = { first: 1, recovered: 0.5, revealed: 0, skipped: 0 };
+
+  function logDrillRound(round) {
+    if (!round || !Array.isArray(round.items) || !round.items.length) return Promise.resolve(null);
+    const id = round.id || "d" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const rec = {
+      v: 1,
+      id,
+      at: round.at || new Date().toISOString(),
+      mode: round.mode || null,
+      config: round.config || null,
+      items: round.items.map((it) => ({
+        key: it.key,
+        fen: it.fen || null,
+        kind: it.kind || null,
+        moveNo: it.moveNo || null,
+        color: it.color || null,
+        courseIds: it.courseIds || [],
+        courseName: it.courseName || null,
+        opening: it.opening || null,
+        result: it.result,
+        attempts: it.attempts || 0,
+      })),
+    };
+    return storage.set("sessions", "dlog:" + id, rec).then(() => rec);
+  }
+
+  async function loadDrillLog() {
+    const all = await storage.entries("sessions");
+    const rounds = [];
+    for (const k in all) {
+      if (typeof k === "string" && k.indexOf("dlog:") === 0 && all[k] && Array.isArray(all[k].items)) rounds.push(all[k]);
+    }
+    rounds.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    return rounds;
+  }
+
+  // Pure aggregation over stored rounds (chronological). Returns
+  //   sessions:  per-round summaries {id, at, mode, positions, avgScore, firstTryPct}
+  //   positions: per-position history {key, …labels, attempts:[{at,result,score}],
+  //              total, avgScore, recentAvg, earlierAvg, trend}
+  // trend = recentAvg (last 3) − earlierAvg (everything before); null until a
+  // position has been drilled more than 3 times.
+  function drillMetrics(rounds) {
+    rounds = (rounds || []).slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    const byKey = new Map();
+    const sessions = [];
+    for (const s of rounds) {
+      let n = 0, sum = 0, first = 0;
+      for (const it of s.items || []) {
+        if (!it || !it.key) continue;
+        const score = DRILL_RESULT_SCORE[it.result] != null ? DRILL_RESULT_SCORE[it.result] : 0;
+        n++; sum += score;
+        if (it.result === "first") first++;
+        let p = byKey.get(it.key);
+        if (!p) {
+          p = { key: it.key, fen: null, kind: null, moveNo: null, color: null,
+                courseIds: [], courseName: null, opening: null, attempts: [] };
+          byKey.set(it.key, p);
+        }
+        // Labels refresh to the latest non-null values so renamed courses win.
+        if (it.fen) p.fen = it.fen;
+        if (it.kind) p.kind = it.kind;
+        if (it.moveNo) p.moveNo = it.moveNo;
+        if (it.color) p.color = it.color;
+        if (it.courseIds && it.courseIds.length) p.courseIds = it.courseIds;
+        if (it.courseName) p.courseName = it.courseName;
+        if (it.opening) p.opening = it.opening;
+        p.attempts.push({ at: s.at, result: it.result, score });
+      }
+      sessions.push({
+        id: s.id, at: s.at, mode: s.mode, positions: n,
+        avgScore: n ? sum / n : 0,
+        firstTryPct: n ? Math.round((first / n) * 100) : 0,
+      });
+    }
+    const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
+    const positions = [...byKey.values()].map((p) => {
+      const scores = p.attempts.map((a) => a.score);
+      const recentAvg = avg(scores.slice(-3));
+      const earlierAvg = avg(scores.slice(0, -3));
+      return Object.assign({}, p, {
+        total: scores.length,
+        avgScore: avg(scores),
+        recentAvg,
+        earlierAvg,
+        trend: earlierAvg == null ? null : +(recentAvg - earlierAvg).toFixed(3),
+      });
+    });
+    positions.sort((a, b) => b.total - a.total);
+    return { sessions, positions };
+  }
+
   // ------------------------------ sessions / export ------------------------------
   // extra: { rep?, mode?, gameIndex? } — repertoire results, active mode, and
   // the game index (for win % / drill-down after a reload).
@@ -928,8 +1030,12 @@
     const themes = await storage.get("sessions", "themes"); // saved by the UI layer
     const boards = await storage.get("sessions", "boards"); // saved by the UI layer
     const drillHistory = await storage.get("sessions", "drillHistory");
+    const favorites = await storage.get("sessions", "favorites");
+    const drillLog = await loadDrillLog();
     return {
       drillHistory: drillHistory || null,
+      favorites: favorites || null,
+      drillLog: drillLog.length ? drillLog : null,
       formatVersion: EXPORT_FORMAT_VERSION,
       savedAt: new Date().toISOString(),
       username, settings, results,
@@ -981,6 +1087,18 @@
       await storage.set("sessions", "drillHistory", data.drillHistory);
       summary.drillHistory = true;
     }
+    if (Array.isArray(data.favorites)) {
+      await storage.set("sessions", "favorites", data.favorites);
+      summary.favorites = data.favorites.length;
+    }
+    if (Array.isArray(data.drillLog) && data.drillLog.length) {
+      const obj = {};
+      for (const s of data.drillLog) if (s && s.id && Array.isArray(s.items)) obj["dlog:" + s.id] = s;
+      if (Object.keys(obj).length) {
+        await storage.setMany("sessions", obj);
+        summary.drillLog = Object.keys(obj).length;
+      }
+    }
     await storage.set("sessions", "last", {
       savedAt: data.savedAt || new Date().toISOString(),
       username: summary.username,
@@ -992,10 +1110,17 @@
 
   async function clearCaches(engine) {
     await storage.flush();
+    const kept = await storage.entries("sessions");
     await storage.clear("evals");
     await storage.clear("sessions");
     await saveCustomBook(); // user's ignored lines survive a cache clear
     await saveCourses();    // imported courses survive too
+    // Favorites and drill progress are user curation/history, not caches.
+    const restore = {};
+    for (const k in kept) {
+      if (k === "favorites" || k === "drillHistory" || (typeof k === "string" && k.indexOf("dlog:") === 0)) restore[k] = kept[k];
+    }
+    if (Object.keys(restore).length) await storage.setMany("sessions", restore);
     if (engine) engine.cache.clear();
   }
 
@@ -1590,6 +1715,8 @@
     repertoireItems, repertoireDrillPool, normalizeRepResults,
     // sessions / backup
     saveSession, loadSession, buildExport, applyImport, clearCaches,
+    // drill log / metrics
+    logDrillRound, loadDrillLog, drillMetrics,
     // utils
     uciToSan, fmtEval, fenToGrid, escapeHtml, clamp, sleep,
   };

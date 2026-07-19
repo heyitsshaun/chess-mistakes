@@ -166,6 +166,269 @@ function wireGamesButtons(r, back) {
   }));
 }
 
+// ----------------------------- drill stats -----------------------------
+// Presentation over the append-only drill log (CMT.loadDrillLog →
+// CMT.drillMetrics). All aggregation happens in core at read time, so this
+// view can be reshaped freely without touching stored data.
+async function openDrillStats(sort) {
+  if (drillState.active) return;
+  const rounds = await CMT.loadDrillLog();
+  renderDrillStats(CMT.drillMetrics(rounds), sort || "drilled");
+}
+
+function drillStatsLabel(p) {
+  const name = p.courseName || p.opening || "Position";
+  const kind = { "user-dev": "course move", "opp-window": "reply", "opp-dev": "reply", engine: "engine" }[p.kind] || "";
+  return `<b>${CMT.escapeHtml(name)}</b><span class="hint">${p.moveNo ? ` · move ${p.moveNo}` : ""}${kind ? ` · ${kind}` : ""}</span>`;
+}
+
+function renderDrillStats(m, sort) {
+  const havePositions = m.positions.length > 0;
+  const totalAttempts = m.positions.reduce((n, p) => n + p.total, 0);
+  const totalFirst = m.positions.reduce((n, p) => n + p.attempts.filter((a) => a.result === "first").length, 0);
+  const recent = m.sessions.slice(-5);
+  const earlier = m.sessions.slice(0, -5);
+  const avgOf = (arr) => (arr.length ? arr.reduce((n, s) => n + s.avgScore, 0) / arr.length : null);
+  const recentAvg = avgOf(recent);
+  const earlierAvg = avgOf(earlier);
+
+  const sorted = m.positions.slice();
+  if (sort === "struggling") sorted.sort((a, b) => a.avgScore - b.avgScore || b.total - a.total);
+  else if (sort === "improving") sorted.sort((a, b) => (b.trend == null ? -Infinity : b.trend) - (a.trend == null ? -Infinity : a.trend));
+  else if (sort === "recent") sorted.sort((a, b) => String(b.attempts[b.attempts.length - 1].at).localeCompare(String(a.attempts[a.attempts.length - 1].at)));
+  else sorted.sort((a, b) => b.total - a.total);
+
+  const DOT = { first: "--best", recovered: "--good", revealed: "--mistake", skipped: "--faint" };
+  const rows = sorted.map((p) => {
+    const dots = p.attempts.slice(-6).map((a) =>
+      `<span class="dsdot" style="background:var(${DOT[a.result] || "--faint"})" title="${a.result}${a.at ? " · " + String(a.at).slice(0, 10) : ""}"></span>`).join("");
+    const trend = p.trend == null
+      ? '<span class="hint">–</span>'
+      : p.trend > 0.12 ? '<span class="ds-up">↑ improving</span>'
+      : p.trend < -0.12 ? '<span class="ds-down">↓ slipping</span>'
+      : '<span class="ds-flat">→ steady</span>';
+    const inResults = !!positionForDrillKey(p.key);
+    return `<tr class="dsrow${inResults ? "" : " ds-gone"}" data-key="${CMT.escapeHtml(p.key)}" role="button" tabindex="0"
+      ${inResults ? "" : 'title="Not in the current results — re-run the analysis to open it"'}>
+      <td>${drillStatsLabel(p)}</td>
+      <td>${p.total}×</td>
+      <td class="ds-dots">${dots}</td>
+      <td>${Math.round(p.avgScore * 100)}%</td>
+      <td>${trend}</td></tr>`;
+  }).join("");
+
+  const roundLines = m.sessions.slice(-8).reverse().map((s) =>
+    `<span class="hint">${String(s.at).slice(0, 10)} · ${s.positions} pos · ${s.firstTryPct}% first-try</span>`).join("<br>");
+
+  $("detail").innerHTML = `
+    <div class="detail-head">
+      <button class="iconbtn backbtn" id="dsBack" aria-label="Back">←</button>
+      <div>
+        <h2>Drill stats</h2>
+        <div class="statline">${m.sessions.length} round${m.sessions.length === 1 ? "" : "s"} · ${m.positions.length} position${m.positions.length === 1 ? "" : "s"} drilled · ${totalAttempts} attempt${totalAttempts === 1 ? "" : "s"}</div>
+      </div>
+    </div>
+    ${havePositions ? `
+    <div class="drill-summary-grid ds-summary">
+      <div class="drill-summary-stat"><span class="drill-summary-value">${totalAttempts ? Math.round((totalFirst / totalAttempts) * 100) : 0}%</span><span class="drill-summary-label">First try overall</span></div>
+      <div class="drill-summary-stat"><span class="drill-summary-value">${recentAvg == null ? "–" : Math.round(recentAvg * 100) + "%"}</span><span class="drill-summary-label">Score, last ${recent.length} round${recent.length === 1 ? "" : "s"}</span></div>
+      <div class="drill-summary-stat"><span class="drill-summary-value">${earlierAvg == null ? "–" : (recentAvg >= earlierAvg ? "+" : "") + Math.round((recentAvg - earlierAvg) * 100) + "pt"}</span><span class="drill-summary-label">vs earlier rounds</span></div>
+    </div>
+    <div class="btnrow ds-tools">
+      <select id="dsSort" aria-label="Sort drill stats">
+        <option value="drilled" ${sort === "drilled" ? "selected" : ""}>Most drilled</option>
+        <option value="struggling" ${sort === "struggling" ? "selected" : ""}>Still struggling</option>
+        <option value="improving" ${sort === "improving" ? "selected" : ""}>Most improved</option>
+        <option value="recent" ${sort === "recent" ? "selected" : ""}>Recently drilled</option>
+      </select>
+    </div>
+    <table class="hist ds-table">
+      <thead><tr><th>Position</th><th>Drilled</th><th>Last results</th><th>Score</th><th>Trend</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="hint">Score: first-try = 100%, recovered = 50%, revealed/skipped = 0%. Trend compares your last 3 attempts to everything before. Click a row to open the position.</p>
+    ${roundLines ? `<p class="hint"><b>Recent rounds</b><br>${roundLines}</p>` : ""}
+    ` : `<p class="hint">No drills recorded yet. Finish a shuffle drill and your results start accumulating here — every round is saved, so you can watch positions move from "slipping" to "improving".</p>`}`;
+
+  interactionVersion++;
+  currentPos = null;
+  activePanelKeys = { Escape: closeExplorer };
+  $("dsBack").addEventListener("click", closeExplorer);
+  const sel = $("dsSort");
+  if (sel) sel.addEventListener("change", () => renderDrillStats(m, sel.value));
+  document.querySelectorAll(".dsrow").forEach((row) => {
+    const open = () => {
+      const r = positionForDrillKey(row.dataset.key);
+      if (!r) { onStatus("That position isn't in the current results — re-run the analysis to open it."); return; }
+      const el = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === (r.groupKey || r.key));
+      if (r.kind === "opp-window") selectOppWindow(r);
+      else selectPosition(r, el || null);
+    };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+  openTrainer();
+}
+
+// ----------------------------- course-line overlay -----------------------------
+// Chessly-style peek at the course from a deviation, without leaving the
+// trainer panel: the course line to this position (rewindable move by move)
+// and the course's continuations from wherever you step to. Opens as an
+// overlay on top of the current detail view.
+const linesOverlay = { el: null, keyHandler: null, st: null };
+
+function openLinesOverlay(r) {
+  const courses = CMT.activeCourses();
+  const course = courses.find((c) => r.courseIds && r.courseIds.includes(c.id)) || courses[0];
+  if (!course) { onStatus("No course loaded."); return; }
+  const targetKey = r.kind === "opp-dev" ? CMT.posKey(r.prevFen) : r.key;
+  const path = CMT.pathToPosition(explorerRep(course), targetKey);
+  if (path == null) { onStatus("Couldn't locate that position in the course tree."); return; }
+  // For opp-dev, include their off-book move so the line ends on the position
+  // you actually face; everything before it is course theory.
+  const sans = r.kind === "opp-dev" ? path.concat(r.theirMove.san) : path.slice();
+  linesOverlay.st = { course, sans, ply: sans.length, gamePlies: sans.length, posRef: r };
+  if (!linesOverlay.el) {
+    const wrap = document.createElement("div");
+    wrap.className = "lo-scrim";
+    wrap.innerHTML = '<div class="lines-overlay" role="dialog" aria-modal="true" aria-label="Course line"></div>';
+    wrap.addEventListener("click", (e) => { if (e.target === wrap) closeLinesOverlay(); });
+    document.body.appendChild(wrap);
+    linesOverlay.el = wrap;
+    linesOverlay.keyHandler = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeLinesOverlay(); }
+      else if (e.key === "ArrowLeft") { e.preventDefault(); e.stopPropagation(); linesOverlayStep(-1); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); e.stopPropagation(); linesOverlayStep(1); }
+    };
+    document.addEventListener("keydown", linesOverlay.keyHandler, true);
+  }
+  renderLinesOverlay();
+}
+
+function closeLinesOverlay() {
+  if (linesOverlay.el) { linesOverlay.el.remove(); linesOverlay.el = null; }
+  if (linesOverlay.keyHandler) {
+    document.removeEventListener("keydown", linesOverlay.keyHandler, true);
+    linesOverlay.keyHandler = null;
+  }
+  linesOverlay.st = null;
+}
+
+// ← rewinds, → steps forward; at the tip, → follows the course when it has
+// exactly one continuation.
+function linesOverlayStep(d) {
+  const st = linesOverlay.st;
+  if (!st) return;
+  if (d < 0 && st.ply > 0) { st.ply--; renderLinesOverlay(); return; }
+  if (d > 0) {
+    if (st.ply < st.sans.length) { st.ply++; renderLinesOverlay(); return; }
+    const rep = explorerRep(st.course);
+    const chess = new Chess();
+    for (const san of st.sans) { try { chess.move(san, { sloppy: true }); } catch (e) { return; } }
+    const node = rep.get(CMT.posKey(chess.fen()));
+    if (node && node.moves.size === 1) {
+      st.sans.push([...node.moves.values()][0].san);
+      st.ply = st.sans.length;
+      renderLinesOverlay();
+    }
+  }
+}
+
+function renderLinesOverlay() {
+  const st = linesOverlay.st;
+  if (!st || !linesOverlay.el) return;
+  const course = st.course;
+  const rep = explorerRep(course);
+
+  // Replay the line, dropping anything invalid, and collect per-ply FENs.
+  const chess = new Chess();
+  const fens = [chess.fen()];
+  const ok = [];
+  for (const san of st.sans) {
+    let mv; try { mv = chess.move(san, { sloppy: true }); } catch (e) { mv = null; }
+    if (!mv) break;
+    ok.push(mv.san);
+    fens.push(chess.fen());
+  }
+  st.sans = ok;
+  st.ply = Math.min(Math.max(0, st.ply), ok.length);
+  st.gamePlies = Math.min(st.gamePlies, ok.length);
+  const fen = fens[st.ply];
+  const key = CMT.posKey(fen);
+  const node = rep.get(key);
+  const userTurn = fen.split(" ")[1] === course.color;
+
+  const crumbs = st.sans.map((san, i) => {
+    const off = st.posRef.kind === "opp-dev" && i === st.gamePlies - 1;
+    const beyond = i >= st.gamePlies;
+    return `${i % 2 === 0 ? `<span class="mvno">${i / 2 + 1}.</span>` : ""}`
+      + `<button class="mv locrumb${i + 1 === st.ply ? " cur" : ""}${off ? " lo-offbook" : ""}${beyond ? " lo-beyond" : ""}"`
+      + ` data-ply="${i + 1}" ${off ? 'title="Their off-book move"' : beyond ? 'title="Explored beyond the game"' : ""}>${CMT.escapeHtml(san)}</button>`;
+  }).join(" ");
+
+  const courseMoveBtns = node && node.moves.size
+    ? [...node.moves].map(([uci, m]) =>
+        `<button class="explmv lomv" data-san="${CMT.escapeHtml(m.san)}"><b>${CMT.escapeHtml(m.san)}</b></button>`).join(" ")
+    : '<span class="hint">End of the course\'s lines.</span>';
+
+  // At the deviation position itself, say what happened there.
+  let devNote = "";
+  const pr = st.posRef;
+  if (pr.kind === "user-dev" && key === pr.key) {
+    const played = pr.plays && pr.plays[0] ? pr.plays[0].san : null;
+    devNote = `<p class="statline lo-devnote">This is where you deviate${played ? `: you played <b>${CMT.escapeHtml(played)}</b>` : ""}; course plays <b>${expectedSans(pr)}</b>.</p>`;
+  } else if (pr.kind === "opp-dev" && st.ply === st.gamePlies && st.gamePlies > 0) {
+    devNote = `<p class="statline lo-devnote">Their <b>${CMT.escapeHtml(pr.theirMove.san)}</b> left the course here (it prepares for ${expectedSans(pr) || "—"}).</p>`;
+  }
+
+  linesOverlay.el.querySelector(".lines-overlay").innerHTML = `
+    <div class="lo-head">
+      <div>
+        <div class="lo-kicker">Course line</div>
+        <h2>${CMT.escapeHtml(course.name)}</h2>
+        <div class="statline">${course.color === "w" ? "White" : "Black"} repertoire · ${userTurn ? "your move" : "their move"} at this point</div>
+      </div>
+      <button class="iconbtn" id="loClose" aria-label="Close">✕</button>
+    </div>
+    <div class="gv-moves lo-crumbs">${crumbs || '<span class="hint">Start position.</span>'}</div>
+    <div class="lo-board">${miniBoardSVG(fen, course.color)}</div>
+    <div class="btnrow lo-nav">
+      <button id="loStart" title="Start position">⏮</button>
+      <button id="loPrev" title="Rewind one move (←)">←</button>
+      <button id="loNext" class="next" title="Forward one move (→)">→</button>
+      <button id="loEnd" title="End of the line">⏭</button>
+    </div>
+    ${devNote}
+    <div class="expl-coursemoves"><span class="hint">Course continue${node && node.moves.size === 1 ? "s" : "s with"}:</span> ${courseMoveBtns}</div>
+    ${studyLineHtml([course.id], key)}
+    <div class="btnrow lo-tools">
+      <button id="loExplorer" title="Open this line in the full line explorer (games, win %, deviation stats)">Open in explorer</button>
+    </div>`;
+
+  const el = linesOverlay.el;
+  el.querySelector("#loClose").addEventListener("click", closeLinesOverlay);
+  el.querySelector("#loStart").addEventListener("click", () => { st.ply = 0; renderLinesOverlay(); });
+  el.querySelector("#loPrev").addEventListener("click", () => linesOverlayStep(-1));
+  el.querySelector("#loNext").addEventListener("click", () => linesOverlayStep(1));
+  el.querySelector("#loEnd").addEventListener("click", () => { st.ply = st.sans.length; renderLinesOverlay(); });
+  el.querySelectorAll(".locrumb").forEach((b) => b.addEventListener("click", () => {
+    st.ply = +b.dataset.ply;
+    renderLinesOverlay();
+  }));
+  el.querySelectorAll(".lomv").forEach((b) => b.addEventListener("click", () => {
+    st.sans = st.sans.slice(0, st.ply);
+    st.sans.push(b.dataset.san);
+    st.ply = st.sans.length;
+    renderLinesOverlay();
+  }));
+  el.querySelector("#loExplorer").addEventListener("click", () => {
+    explState.courseId = course.id;
+    explState.sans = st.sans.slice(0, st.ply);
+    closeLinesOverlay();
+    renderExplorer();
+  });
+}
+
 // ----------------------------- line explorer -----------------------------
 // Browse a course tree move by move; at every position see the games that
 // followed the line this far, their win %, and how often you deviate here.

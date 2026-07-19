@@ -65,6 +65,36 @@ Keyboard: ←/→ step the game viewer, ← backs up the explorer, Esc goes up a
 level. Copy-FEN / copy-line buttons at the bottom; every deviation panel has
 an **Explore** button that deep-links here.
 
+### Course-line overlay
+
+On any deviation panel, **Course line** (next to *Show course move*) pops the
+course's line to that position in an overlay — course title up top, the moves
+that led there as a rewindable strip (←/→ or the ⏮ ← → ⏭ buttons), and the
+course's continuations from wherever you step to. For opponent deviations the
+last move is highlighted as their off-book move. **Open in explorer** jumps to
+the full line explorer at the same spot; Esc closes.
+
+### Favorites
+
+Every position card (and detail panel) has a ☆ star. Starred positions persist,
+survive *Clear saved cache*, and travel with export/import. Filter the list
+with the **★ only** chip, and check **Favorites only** in the drill setup to
+drill just your starred positions.
+
+### Drill stats
+
+**Drill stats** (next to *Line explorer*) shows what you're improving in:
+per-position drill history (result dots for your last attempts, score, and an
+improving / steady / slipping trend), overall first-try rate, recent rounds vs
+earlier ones, sortable by most drilled / still struggling / most improved.
+Click a row to open that position.
+
+Under the hood every finished drill round is appended to a persistent log
+(one immutable record per round in IndexedDB, `dlog:*` keys), and all
+aggregation happens at read time (`CMT.drillMetrics`) — so the stats UI can be
+reshaped later without migrating stored data. The log survives cache clears
+and is included in backups.
+
 ### Background engine grading
 
 Results render the moment games are loaded (counts and win % need no engine).

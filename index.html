@@ -61,10 +61,12 @@ try {
       <label class="chip"><span>skip first</span><input id="hideBefore" type="number" value="0" min="0" max="40" /><span>moves</span></label>
       <label class="chip check legacy-only"><input type="checkbox" id="ignoreBook" checked /><span>ignore book</span></label>
       <label class="chip check"><input type="checkbox" id="showAll" /><span>show all</span></label>
+      <label class="chip check" title="Only positions you've starred"><input type="checkbox" id="favOnly" /><span>★ only</span></label>
     </div>
     <div class="drill-launch">
       <button id="openDrill" class="primary" type="button">Shuffle drill</button>
       <button id="openExplorer" type="button" title="Browse your course lines and the games that followed them">Line explorer</button>
+      <button id="openStats" type="button" title="Your drill history: what you're improving in and what still needs work">Drill stats</button>
       <span id="drillEligibleCount" class="drill-eligible-count" aria-live="polite">0 eligible</span>
     </div>
     <section id="drillSetup" class="drill-setup" role="dialog" aria-labelledby="drillSetupTitle" aria-describedby="drillSetupHint" hidden>
@@ -94,6 +96,7 @@ try {
         </label>
       </div>
       <label class="chip check wide"><input type="checkbox" id="drillFocusWeak" /><span>Focus weak spots first (positions you failed or haven't drilled lead the round)</span></label>
+      <label class="chip check wide"><input type="checkbox" id="drillFavOnly" /><span>Favorites only (just the positions you've starred ★)</span></label>
       <output id="drillPoolPreview" class="drill-pool-preview" for="drillMinOcc drillMinRate drillLimit" aria-live="polite">No positions match yet.</output>
       <div class="drill-setup-actions">
         <button id="cancelDrillSetup" type="button">Cancel</button>

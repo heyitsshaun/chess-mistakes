@@ -36,9 +36,10 @@ const combined = [
 ].map((f) => fs.readFileSync(path.join(root, f), "utf8")).join("\n;\n") + `
 ;window.__hooks = {
   renderList, retryMove, openDrillSetup, startDrill, exitDrillNow, setMode,
-  setGameIndex, openExplorer,
+  setGameIndex, openExplorer, openDrillStats, renderDrillStats,
   setLastRep: (r) => { lastRep = r; },
   getState: () => ({ appMode, lastRep, lastResults, currentPos }),
+  getFavorites: () => favorites,
 };`;
 try { window.eval(combined); } catch (e) { errors.push("script load: " + e.message); }
 
@@ -229,6 +230,82 @@ function check(name, fn) {
     // intentional button exists on user-dev panel
     [...doc.querySelectorAll("#results .card")].find((c) => c.textContent.includes("I deviated")).click();
     assert.ok(doc.querySelector(".devig"), "intentional button missing");
+  });
+
+  check("favorite star toggles, filters the list, and gates the drill pool", () => {
+    H.renderList();
+    const cards = [...doc.querySelectorAll("#results .card")];
+    assert.ok(cards.length >= 2, "need both cards");
+    const favBtn = cards[0].querySelector(".favbtn");
+    assert.ok(favBtn, "card star missing");
+    const favKey = cards[0].dataset.key;
+    favBtn.click();
+    assert.ok(favBtn.classList.contains("on"), "star didn't toggle on");
+    assert.ok(H.getFavorites().has(favKey));
+    // list filter
+    doc.getElementById("favOnly").checked = true;
+    H.renderList();
+    const after = [...doc.querySelectorAll("#results .card")];
+    assert.strictEqual(after.length, 1);
+    assert.strictEqual(after[0].dataset.key, favKey);
+    doc.getElementById("favOnly").checked = false;
+    H.renderList();
+    // detail panel shows the star too
+    [...doc.querySelectorAll("#results .card")].find((c) => c.dataset.key === favKey).click();
+    assert.ok(doc.querySelector("#detail .detailfav"), "detail star missing");
+    // favorites-only drill: pool narrows to the starred position
+    doc.getElementById("drillFavOnly").checked = true;
+    H.openDrillSetup();
+    H.startDrill();
+    assert.ok(doc.body.classList.contains("drill-active"));
+    assert.ok(doc.getElementById("detail").textContent.includes("Position 1 of 1"), "favorites-only pool should have exactly 1 position");
+    H.exitDrillNow();
+    doc.getElementById("drillFavOnly").checked = false;
+  });
+
+  check("course-line overlay opens with title, rewinds, and closes", () => {
+    const card = [...doc.querySelectorAll("#results .card")].find((c) => c.textContent.includes("I deviated"));
+    card.click();
+    const toLines = doc.getElementById("toLines");
+    assert.ok(toLines, "Course line button missing");
+    toLines.click();
+    let overlay = doc.querySelector(".lines-overlay");
+    assert.ok(overlay, "overlay missing");
+    assert.ok(overlay.textContent.includes("Owen"), "course title missing");
+    assert.ok(overlay.querySelector(".locrumb"), "move crumbs missing");
+    assert.ok(overlay.textContent.includes("This is where you deviate"), "deviation note missing");
+    assert.ok(overlay.querySelector(".locrumb.cur"), "current move not marked");
+    // rewind to the start, then step forward again
+    doc.getElementById("loPrev").click();
+    overlay = doc.querySelector(".lines-overlay");
+    assert.ok(!overlay.querySelector(".locrumb.cur"), "rewind didn't move the pointer");
+    doc.getElementById("loNext").click();
+    overlay = doc.querySelector(".lines-overlay");
+    assert.ok(overlay.querySelector(".lomv"), "course continuation buttons missing");
+    doc.getElementById("loClose").click();
+    assert.ok(!doc.querySelector(".lines-overlay"), "overlay didn't close");
+  });
+
+  await H.openDrillStats();
+  check("drill stats view renders (empty log in jsdom)", () => {
+    const detail = doc.getElementById("detail");
+    assert.ok(detail.textContent.includes("Drill stats"));
+    assert.ok(detail.textContent.includes("No drills recorded yet"));
+    doc.getElementById("dsBack").click();
+  });
+
+  check("drill stats table renders from a synthetic log", () => {
+    const rounds = [
+      { id: "r1", at: "2026-01-01", items: [{ key: "K", result: "revealed", courseName: "Owen's Defense", moveNo: 2, kind: "user-dev" }] },
+      { id: "r2", at: "2026-01-02", items: [{ key: "K", result: "first", courseName: "Owen's Defense", moveNo: 2, kind: "user-dev" }] },
+    ];
+    H.renderDrillStats(CMT.drillMetrics(rounds), "drilled");
+    const detail = doc.getElementById("detail");
+    assert.ok(detail.querySelector(".dsrow"), "stats row missing");
+    assert.ok(detail.textContent.includes("Owen's Defense"));
+    assert.ok(detail.querySelectorAll(".dsdot").length === 2, "result dots missing");
+    assert.ok(detail.textContent.includes("2 rounds"));
+    doc.getElementById("dsBack").click();
   });
 
   check("legacy mode toggle keeps working", () => {

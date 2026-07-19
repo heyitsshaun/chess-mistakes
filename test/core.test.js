@@ -789,6 +789,73 @@ function fakeEngine(cpTable, bestTable) {
     assert.strictEqual(CMT.normalizeRepResults(null), null);
   });
 
+  test("drillMetrics aggregates rounds into per-position history and trends", () => {
+    const mk = (at, result) => ({
+      at, id: "r" + at, mode: "rep",
+      items: [{ key: "K1", fen: "F1", kind: "user-dev", moveNo: 4, color: "w",
+                courseIds: ["c1"], courseName: "London", result, attempts: 1 }],
+    });
+    // 5 attempts on the same position: two early fails, then three first-tries.
+    const rounds = [
+      mk("2026-01-01", "revealed"), mk("2026-01-02", "skipped"),
+      mk("2026-01-03", "first"), mk("2026-01-04", "first"), mk("2026-01-05", "first"),
+    ];
+    const m = CMT.drillMetrics(rounds);
+    assert.strictEqual(m.sessions.length, 5);
+    assert.strictEqual(m.sessions[0].firstTryPct, 0);
+    assert.strictEqual(m.sessions[4].firstTryPct, 100);
+    assert.strictEqual(m.positions.length, 1);
+    const p = m.positions[0];
+    assert.strictEqual(p.total, 5);
+    assert.strictEqual(p.courseName, "London");
+    assert.strictEqual(p.recentAvg, 1);       // last 3: first, first, first
+    assert.strictEqual(p.earlierAvg, 0);      // revealed + skipped
+    assert.strictEqual(p.trend, 1);           // improving
+    // Scores: first=1, recovered=0.5, revealed/skipped=0.
+    const m2 = CMT.drillMetrics([mk("2026-01-01", "recovered")]);
+    assert.strictEqual(m2.positions[0].avgScore, 0.5);
+    assert.strictEqual(m2.positions[0].trend, null); // too few attempts
+  });
+
+  test("drillMetrics is order-independent and tolerates malformed items", () => {
+    const rounds = [
+      { at: "2026-02-02", id: "b", items: [{ key: "K", result: "first" }] },
+      { at: "2026-02-01", id: "a", items: [{ key: "K", result: "skipped" }, { result: "first" }, null] },
+    ];
+    const m = CMT.drillMetrics(rounds);
+    assert.strictEqual(m.sessions[0].id, "a"); // sorted chronologically
+    assert.deepStrictEqual(m.positions[0].attempts.map((x) => x.result), ["skipped", "first"]);
+    assert.deepStrictEqual(CMT.drillMetrics(null), { sessions: [], positions: [] });
+  });
+
+  await atest("logDrillRound validates input and stamps id/time", async () => {
+    assert.strictEqual(await CMT.logDrillRound(null), null);
+    assert.strictEqual(await CMT.logDrillRound({ items: [] }), null);
+    const rec = await CMT.logDrillRound({ mode: "rep", items: [{ key: "K", result: "first" }] });
+    assert.ok(rec.id && rec.at);
+    assert.strictEqual(rec.v, 1);
+    assert.strictEqual(rec.items[0].key, "K");
+    assert.deepStrictEqual(rec.items[0].courseIds, []);
+    // Node has no IndexedDB, so the log reads back empty — but never throws.
+    assert.deepStrictEqual(await CMT.loadDrillLog(), []);
+  });
+
+  await atest("export/import round-trip carries favorites and the drill log", async () => {
+    const payload = await CMT.buildExport("tester", SETTINGS, []);
+    assert.ok("favorites" in payload && "drillLog" in payload && "drillHistory" in payload);
+    // applyImport accepts (and doesn't choke on) the new fields.
+    const out = await CMT.applyImport({
+      results: [],
+      favorites: ["K1", "K2"],
+      drillLog: [{ id: "r1", at: "2026-01-01", items: [{ key: "K1", result: "first" }] }, { bad: true }],
+    });
+    assert.ok(out.summary);
+    // In the browser these summary fields report what was written; in Node the
+    // storage layer is a no-op but the code path must still normalize them.
+    assert.strictEqual(out.summary.favorites, 2);
+    assert.strictEqual(out.summary.drillLog, 1);
+  });
+
   console.log("\n" + passed + " passed, " + failed + " failed");
   process.exit(failed ? 1 : 0);
 })();
