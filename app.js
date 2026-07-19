@@ -2353,13 +2353,9 @@ function init() {
     onStatus("Cleared saved evals and results (custom lines and themes kept).");
   });
 
-  $("pgnFile").addEventListener("change", async (e) => {
-    const files = [...e.target.files];
-    e.target.value = "";
-    if (!files.length || isRunning) return;
-    let text = "";
-    for (const f of files) text += (await f.text()) + "\n\n";
+  function runFromPgnText(text) {
     const games = CMT.gamesFromPgnText(text);
+    if (!games.length) { onStatus("No games found in that PGN."); return; }
     const s = readSettings();
     if (s.username) {
       const u = s.username.toLowerCase();
@@ -2373,6 +2369,27 @@ function init() {
     }
     setDrawer(false);
     run(games);
+  }
+
+  $("pgnFile").addEventListener("change", async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length || isRunning) return;
+    let text = "";
+    for (const f of files) text += (await f.text()) + "\n\n";
+    runFromPgnText(text);
+  });
+  $("pastePgnBtn").addEventListener("click", () => {
+    const box = $("pastePgnBox");
+    box.hidden = !box.hidden;
+    if (!box.hidden) $("pgnPaste").focus();
+  });
+  $("analyzePasted").addEventListener("click", () => {
+    const text = $("pgnPaste").value.trim();
+    if (!text || isRunning) return;
+    $("pastePgnBox").hidden = true;
+    $("pgnPaste").value = "";
+    runFromPgnText(text);
   });
 
   $("exportBtn").addEventListener("click", async () => {

@@ -233,9 +233,14 @@ try {
     <summary>Data</summary>
     <div class="btnrow wrap">
       <label class="filebtn">Load PGN file<input id="pgnFile" type="file" accept=".pgn,.txt" hidden multiple /></label>
+      <button id="pastePgnBtn">Paste PGN</button>
       <button id="exportBtn" disabled>Export backup</button>
       <label class="filebtn">Import backup<input id="importFile" type="file" accept=".json" hidden /></label>
       <button id="clearCache">Clear saved cache</button>
+    </div>
+    <div id="pastePgnBox" class="course-lines" hidden>
+      <textarea id="pgnPaste" placeholder="Paste one or more PGN games here…" spellcheck="false"></textarea>
+      <div class="btnrow"><button id="analyzePasted" class="primary">Analyze pasted games</button></div>
     </div>
     <p class="hint">Backups include results, the engine eval cache, your custom lines, and themes.</p>
   </details>
