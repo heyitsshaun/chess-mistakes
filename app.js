@@ -469,6 +469,8 @@ function renderRepList() {
   const s = readSettings();
   CMT.recomputeRepertoireFlags(lastRep, s, CMT.customBook.set);
   let items = CMT.repertoireItems(lastRep, $("devFilter").value);
+  const courseFilter = $("courseFilter").value;
+  if (courseFilter !== "all") items = items.filter((r) => (r.courseIds || []).includes(courseFilter));
   items = items.filter((r) => (showAll || r.flagged) && r.moveNo > hideBefore);
   items = CMT.sortResults(items, $("sortBy").value);
   currentList = items;
@@ -896,6 +898,18 @@ function finishDrill() {
   const firstTry = outcomes.filter((o) => o.firstTry === true && !o.revealed).length;
   const recovered = outcomes.filter((o) => o.solved && o.firstTry !== true && !o.revealed).length;
   const assisted = outcomes.filter((o) => o.revealed || o.skipped).length;
+  const missKeys = drillState.queueKeys.filter((key) => {
+    const o = drillOutcome(key);
+    return o.revealed || o.skipped;
+  });
+  const missBtns = missKeys.map((key) => {
+    const r = positionForDrillKey(key);
+    if (!r) return "";
+    const label = r.kind === "user-dev"
+      ? `Move ${r.moveNo}: course plays ${(r.expected[0] || {}).san || "?"}`
+      : `Move ${r.moveNo}: best was ${CMT.escapeHtml(CMT.uciToSan(r.fen, r.best) || "?")}`;
+    return `<button class="missbtn" data-key="${key}">${label}</button>`;
+  }).join(" ");
   $("detail").innerHTML = `
     <div class="drill-shell">
       <section class="drill-summary" aria-live="polite">
@@ -907,6 +921,7 @@ function finishDrill() {
           <div class="drill-summary-stat"><span class="drill-summary-value">${recovered}</span><span class="drill-summary-label">Recovered</span></div>
           <div class="drill-summary-stat"><span class="drill-summary-value">${assisted}</span><span class="drill-summary-label">Revealed / skipped</span></div>
         </div>
+        ${missBtns ? `<div class="drill-misses"><span class="hint">Review what you missed:</span> ${missBtns}</div>` : ""}
         <div class="btnrow">
           <button id="exitDrillSummary" type="button">Back to positions</button>
           <button id="adjustDrill" type="button">Adjust filters</button>
@@ -917,6 +932,15 @@ function finishDrill() {
   $("exitDrillSummary").addEventListener("click", () => requestExitDrill(false));
   $("adjustDrill").addEventListener("click", () => requestExitDrill(true));
   $("reshuffleDrill").addEventListener("click", reshuffleDrill);
+  document.querySelectorAll(".missbtn").forEach((b) => b.addEventListener("click", () => {
+    const r = positionForDrillKey(b.dataset.key);
+    if (!r) return;
+    drillState.openSetupAfterExit = false;
+    exitDrillNow();
+    const el = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === (r.groupKey || r.key));
+    if (r.kind === "opp-window") selectOppWindow(r);
+    else selectPosition(r, el || null);
+  }));
 }
 
 function reshuffleDrill() {
@@ -2103,6 +2127,14 @@ function renderCourses() {
   const el = $("courseList");
   if (!el) return;
   const courses = CMT.activeCourses();
+  // Keep the list-rail course filter in sync with the loaded courses.
+  const cf = $("courseFilter");
+  if (cf) {
+    const cur = cf.value;
+    cf.innerHTML = '<option value="all">All courses</option>' + courses.map((c) =>
+      `<option value="${c.id}">${CMT.escapeHtml(c.shortName || c.name)}</option>`).join("");
+    cf.value = [...cf.options].some((o) => o.value === cur) ? cur : "all";
+  }
   $("restoreCourses").hidden = !CMT.courseManager.removedIds.length;
   if (!courses.length) {
     el.innerHTML = '<p class="hint">No courses loaded. Import a Chessly crawl or paste lines below.</p>';
@@ -2271,6 +2303,7 @@ function init() {
   CMT.setBundledCourses(window.CMT_COURSES || []);
   CMT.loadCourses().then(renderCourses);
   $("devFilter").addEventListener("change", renderList);
+  $("courseFilter").addEventListener("change", renderList);
   $("restoreCourses").addEventListener("click", () => { CMT.restoreRemovedCourses(); renderCourses(); });
   $("courseFile").addEventListener("change", async (e) => {
     const files = [...e.target.files];
