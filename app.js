@@ -411,13 +411,20 @@ function renderList() {
         <div class="line">You played <b>${CMT.escapeHtml(worst.san)}</b> ${worst.count}/${r.total}×
           ${pills(worst.level, worst.book, CMT.customBook.set.has(r.key + "|" + worst.uci))}</div>
         <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(${sevColor})"></span></div>
-        <div class="meta">bad ${(r.badShare * 100).toFixed(0)}% · avg loss ${r.avgCpl.toFixed(0)}cp · best <b>${CMT.escapeHtml(CMT.uciToSan(r.fen, r.best) || r.best || "?")}</b></div>
+        <div class="meta">bad ${(r.badShare * 100).toFixed(0)}% · score ${winCellHtml(positionGameIds(r))} · ${r.graded ? `avg loss ${r.avgCpl.toFixed(0)}cp · best <b>${CMT.escapeHtml(CMT.uciToSan(r.fen, r.best) || r.best || "?")}</b>` : '<span class="hint">grading…</span>'}</div>
       </div>
       <span class="chev">›</span>`;
     card.addEventListener("click", () => selectPosition(r, card));
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectPosition(r, card); } });
     el.appendChild(card);
   }
+}
+
+// Union of a position's plays' game ids (for card-level win %).
+function positionGameIds(r) {
+  const ids = [];
+  for (const p of r.plays || []) for (const id of p.gameIds || []) ids.push(id);
+  return ids;
 }
 
 // Repertoire-mode list: user-dev and opp-dev cards, filterable, same rail.
@@ -470,7 +477,7 @@ function renderRepList() {
           ${courseTag(r)} <span class="meta">Move ${r.moveNo} · ${r.color === "w" ? "White" : "Black"}</span>
           <div class="line"><span class="pill UserDev">I deviated</span> You played <b>${CMT.escapeHtml(worst.san)}</b> ${worst.count}/${r.total}×</div>
           <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--mistake)"></span></div>
-          <div class="meta">off-book ${(r.badShare * 100).toFixed(0)}% of ${r.total} visit${r.total === 1 ? "" : "s"} · course: <b>${expectedSans(r)}</b></div>
+          <div class="meta">off-book ${(r.badShare * 100).toFixed(0)}% of ${r.total} visit${r.total === 1 ? "" : "s"} · score ${winCellHtml(positionGameIds(r))} · course: <b>${expectedSans(r)}</b></div>
         </div>
         <span class="chev">›</span>`;
     } else {
@@ -482,7 +489,7 @@ function renderRepList() {
           ${courseTag(r)} <span class="meta">Move ${r.moveNo} · ${r.color === "w" ? "White" : "Black"} to answer</span>
           <div class="line"><span class="pill OppDev">They deviated</span> Opponents played <b>${CMT.escapeHtml(r.theirMove.san)}</b> ${r.count}×</div>
           <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--inacc)"></span></div>
-          <div class="meta">${bad ? `<b>${bad}</b> of your ${graded} replies flagged` : graded ? `all ${graded} of your replies fine` : "replies not graded yet"} · avg loss ${r.avgCpl.toFixed(0)}cp</div>
+          <div class="meta">${bad ? `<b>${bad}</b> of your ${graded} replies flagged` : graded ? `all ${graded} of your replies fine` : "replies not graded yet"} · score ${winCellHtml(r.gameIds)} · avg loss ${r.avgCpl.toFixed(0)}cp</div>
         </div>
         <span class="chev">›</span>`;
     }
@@ -1339,6 +1346,15 @@ function setupBoardFor(r) {
 function wireDetailCommon(r) {
   const back = $("backBtn");
   if (back) back.addEventListener("click", requestCloseTrainer);
+  const toExpl = $("toExplorer");
+  if (toExpl) toExpl.addEventListener("click", () => {
+    if (gradingPromise) return;
+    // Window positions deep-link via their opp-dev group.
+    const target = r.kind === "opp-window" && lastRep
+      ? lastRep.oppDev.find((g) => g.key === r.groupKey) || r
+      : r;
+    openInExplorer(target);
+  });
   const show = $("showBest");
   if (show) show.addEventListener("click", () => { if (!gradingPromise) showAnswerFor(r); });
   const reset = $("resetBoard");
@@ -1408,6 +1424,7 @@ function selectUserDev(r, cardEl) {
       <div class="btnrow mobile-actions">
         <button id="showBest">Show course move</button>
         <button id="resetBoard">Reset</button>
+        <button id="toExplorer" title="Open this position in the line explorer">Explore</button>
         <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
         ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
       </div>
@@ -1460,6 +1477,7 @@ function selectOppDev(g, cardEl) {
       <div class="btnrow mobile-actions">
         <button id="showBest" ${first && first.best ? "" : "disabled"}>Show best</button>
         <button id="resetBoard">Reset</button>
+        <button id="toExplorer" title="Open this deviation in the line explorer">Explore</button>
         <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
         ${g.url ? `<a href="${g.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
       </div>
@@ -1863,6 +1881,21 @@ async function restoreSession() {
 // Browse a course tree move by move; at every position see the games that
 // followed the line this far, their win %, and how often you deviate here.
 const explState = { courseId: null, sans: [], _repCache: {} };
+
+// Deep-link a deviation into the explorer: walk the course to the deviation
+// position (plus, for opp-dev, their off-book move so you land on the
+// position you actually face).
+function openInExplorer(r) {
+  const courses = CMT.activeCourses();
+  const course = courses.find((c) => r.courseIds && r.courseIds.includes(c.id)) || courses[0];
+  if (!course) { onStatus("No course loaded."); return; }
+  const targetKey = r.kind === "opp-dev" ? CMT.posKey(r.prevFen) : r.key;
+  const path = CMT.pathToPosition(explorerRep(course), targetKey);
+  if (path == null) { onStatus("Couldn't locate that position in the course tree."); return; }
+  explState.courseId = course.id;
+  explState.sans = r.kind === "opp-dev" ? path.concat(r.theirMove.san) : path;
+  renderExplorer();
+}
 
 function explorerRep(course) {
   if (!explState._repCache[course.id]) {

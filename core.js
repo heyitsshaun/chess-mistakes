@@ -1460,6 +1460,36 @@
   }
 
   // ------------------------------ line explorer ------------------------------
+  // Shortest SAN path through a repertoire tree from the start position to
+  // the position with `targetKey`. BFS over course moves; null if the
+  // position isn't in the tree. Used to deep-link deviations into the
+  // explorer.
+  function pathToPosition(rep, targetKey, startFen) {
+    startFen = startFen || "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    if (posKey(startFen) === targetKey) return [];
+    const visited = new Set([posKey(startFen)]);
+    const queue = [{ fen: startFen, sans: [] }];
+    while (queue.length) {
+      const { fen, sans } = queue.shift();
+      const node = rep.get(posKey(fen));
+      if (!node) continue;
+      for (const [, m] of node.moves) {
+        const c = new ChessCtor(fen);
+        let mv;
+        try { mv = c.move(m.san, { sloppy: true }); } catch (e) { mv = null; }
+        if (!mv) continue;
+        const nf = c.fen();
+        const nk = posKey(nf);
+        if (visited.has(nk)) continue;
+        const nextSans = sans.concat(mv.san);
+        if (nk === targetKey) return nextSans;
+        visited.add(nk);
+        queue.push({ fen: nf, sans: nextSans });
+      }
+    }
+    return null;
+  }
+
   // Stats for one position while browsing course lines:
   //   courseMoves — the course tree's moves here
   //   stats       — win % over the games that reached this position
@@ -1529,7 +1559,7 @@
     gradePositions, finalize, recomputeFlags, sortResults,
     filterDrillPositions, shuffleCopy, normalizeResults,
     // game index / explorer
-    buildGameIndex, buildPosIndex, scoreStats, explorerStats,
+    buildGameIndex, buildPosIndex, scoreStats, explorerStats, pathToPosition,
     // book
     bookMovesFor, annotateBook,
     // custom lines

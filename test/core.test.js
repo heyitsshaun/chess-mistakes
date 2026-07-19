@@ -754,6 +754,16 @@ function fakeEngine(cpTable, bestTable) {
     assert.strictEqual(active[0].name, "override");
   });
 
+  test("pathToPosition finds a course path to a deep position", () => {
+    const rep = CMT.buildRepertoire([WCOURSE], "w");
+    const c = new (require("chess.js").Chess)();
+    ["d4", "Nf6", "Bg5", "e6"].forEach((s) => c.move(s, { sloppy: true }));
+    const path = CMT.pathToPosition(rep, CMT.posKey(c.fen()));
+    assert.deepStrictEqual(path, ["d4", "Nf6", "Bg5", "e6"]);
+    assert.deepStrictEqual(CMT.pathToPosition(rep, CMT.posKey(new (require("chess.js").Chess)().fen())), []);
+    assert.strictEqual(CMT.pathToPosition(rep, "no such key"), null);
+  });
+
   test("normalizeRepResults re-derives keys and drops malformed entries", () => {
     const rep = {
       userDev: [{ fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 5 9", plays: [] }, { plays: [] }],
