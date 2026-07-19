@@ -427,6 +427,25 @@ function positionGameIds(r) {
   return ids;
 }
 
+// Compact insight strip at the top of the repertoire list.
+function repSummaryHtml() {
+  if (!lastRep || !lastRep.counts) return "";
+  const c = lastRep.counts;
+  const matched = c.games - c.unmatched;
+  const inBookPct = matched ? Math.round((c.bookEnd / matched) * 100) : 0;
+  const allIds = gameIndex ? gameIndex.map((g) => g.id) : [];
+  const overall = allIds.length ? CMT.scoreStats(allIds, gameById) : null;
+  const topLeak = lastRep.userDev.slice().sort((a, b) => b.badCount - a.badCount)[0];
+  return `<div class="rep-summary">
+    <span><b>${c.games}</b> games</span>
+    <span><b>${inBookPct}%</b> stayed in book</span>
+    <span class="s-user"><b>${c.userDev}</b> you left first</span>
+    <span class="s-opp"><b>${c.oppDev}</b> they left first</span>
+    ${overall && overall.n ? `<span>score <b>${overall.pct}%</b></span>` : ""}
+    ${topLeak ? `<span class="s-leak" title="${CMT.escapeHtml(topLeak.opening || "")}">worst leak: <b>${CMT.escapeHtml(topLeak.plays[0].san)}</b> ×${topLeak.badCount} (move ${topLeak.moveNo})</span>` : ""}
+  </div>`;
+}
+
 // Repertoire-mode list: user-dev and opp-dev cards, filterable, same rail.
 function expectedSans(r) {
   return (r.expected || []).map((e) => CMT.escapeHtml(e.san)).join(" or ");
@@ -462,7 +481,7 @@ function renderRepList() {
         : "Every analyzed game either stayed inside your courses or wasn't matched. Widen the lookback or check the right courses are loaded (Settings → Repertoire courses)."}</p></div>`;
     return;
   }
-  el.innerHTML = "";
+  el.innerHTML = repSummaryHtml();
   for (const r of items) {
     const card = document.createElement("div");
     card.className = "card" + (currentPos && currentPos.key === r.key ? " active" : "");
