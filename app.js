@@ -1993,7 +1993,7 @@ function init() {
   Pieces.onChange(() => {
     miniBoardCache.clear();
     const sel = $("pieceSet");
-    if (sel) sel.value = Pieces.id() === "classic" ? (localStorage.getItem("cmt-piece-set") || "classic") : Pieces.id();
+    if (sel) sel.value = Pieces.id();
     if (!drillState.active) renderList();
     if ($("board") && boardState.chess) renderBoard();
   });

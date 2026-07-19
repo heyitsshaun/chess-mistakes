@@ -41,7 +41,7 @@ const Pieces = (() => {
       }
       active = urls ? { id, urls } : { id: "classic", urls: null };
     }
-    try { localStorage.setItem(PREF_KEY, id); } catch (e) { /* optional */ }
+    try { localStorage.setItem(PREF_KEY, active.id); } catch (e) { /* optional */ }
     notify();
     return active.id;
   }
