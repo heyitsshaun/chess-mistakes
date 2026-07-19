@@ -31,6 +31,7 @@ const combined = [
   "themes.js",
   "pieces.js",
   "app.js",
+  "views.js",
 ].map((f) => fs.readFileSync(path.join(root, f), "utf8")).join("\n;\n") + `
 ;window.__hooks = {
   renderList, retryMove, openDrillSetup, startDrill, exitDrillNow, setMode,

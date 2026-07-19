@@ -200,6 +200,8 @@ The app is split so the UI can be overhauled without touching (or breaking) the 
   system-preference mode, light/dark assignments, persistence and backup mirror.
 - `pieces.js` — piece-set manager (cburnett CDN fetch + cache, custom uploads,
   classic fallback).
+- `views.js` — the drill-down views (games list, game viewer, line explorer),
+  split from app.js; loaded after it and sharing its top-level scope.
 - `app.js` — **thin UI layer.** Reads settings from inputs, renders the list/board/
   detail panels, wires events. Everything it does goes through the `CMT` API.
 - `index.html` / `styles.css` — layout and styling.
