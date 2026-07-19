@@ -449,7 +449,7 @@ function repSummaryHtml() {
     <span class="s-user"><b>${c.userDev}</b> you left first</span>
     <span class="s-opp"><b>${c.oppDev}</b> they left first</span>
     ${overall && overall.n ? `<span>score <b>${overall.pct}%</b></span>` : ""}
-    ${topLeak ? `<span class="s-leak" title="${CMT.escapeHtml(topLeak.opening || "")}">worst leak: <b>${CMT.escapeHtml(topLeak.plays[0].san)}</b> ×${topLeak.badCount} (move ${topLeak.moveNo})</span>` : ""}
+    ${topLeak ? `<button class="s-leak" id="summaryLeak" data-key="${topLeak.key}" title="${CMT.escapeHtml(topLeak.opening || "")} — click to open">worst leak: <b>${CMT.escapeHtml(topLeak.plays[0].san)}</b> ×${topLeak.badCount} (move ${topLeak.moveNo})</button>` : ""}
   </div>`;
 }
 
@@ -543,6 +543,14 @@ function renderRepList() {
     card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectPosition(r, card); } });
     el.appendChild(card);
   }
+  const leak = $("summaryLeak");
+  if (leak) leak.addEventListener("click", () => {
+    const r = lastRep.userDev.find((x) => x.key === leak.dataset.key);
+    if (!r) return;
+    const cardEl = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === r.key);
+    selectPosition(r, cardEl || null);
+    if (cardEl && cardEl.scrollIntoView) cardEl.scrollIntoView({ block: "nearest" });
+  });
 }
 
 // ----------------------------- shuffled drill -----------------------------
