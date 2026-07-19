@@ -658,6 +658,13 @@ body:not(.mode-legacy) .legacy-only { display: none; }
 .expl-stats { margin-top: 10px; }
 .expl-dev { color: var(--mistake); }
 .expl-crumbs { max-height: 90px; }
+.expl-tools { margin-top: 10px; }
+
+@media (max-width: 900px) {
+  .mode-toggle button { padding: 4px 8px; font-size: 11px; }
+  .rep-summary { gap: 4px 10px; font-size: 11px; padding: 6px 10px; }
+  .gv-moves { max-height: 120px; }
+}
 
 /* -------------------------- reduced motion ----------------------------- */
 @media (prefers-reduced-motion: reduce) {

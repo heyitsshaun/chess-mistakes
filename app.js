@@ -2104,11 +2104,16 @@ function renderExplorer() {
     ${stats && stats.userToMove && stats.deviationPct != null ? `
       <div class="statline ${stats.deviationPct > 0 ? "expl-dev" : ""}">You deviate from the line when playing this position
         <b>${stats.deviationPct}%</b> of the time (${stats.devTotal} of your moves here${offBook.length ? `, off-book: ${offBook.map((p) => CMT.escapeHtml(p.san)).join(", ")}` : ""}).</div>` : ""}
+    ${studyLineHtml([course.id], key)}
     ${playedRows ? `
     <table class="hist">
       <thead><tr><th>Played here (${userTurn ? "you" : "them"})</th><th>#</th><th>Win</th><th></th></tr></thead>
       <tbody>${playedRows}</tbody>
-    </table>` : ""}`;
+    </table>` : ""}
+    <div class="btnrow expl-tools">
+      <button id="explCopyFen" class="igbtn">copy FEN</button>
+      <button id="explCopyLine" class="igbtn" ${explState.sans.length ? "" : "disabled"}>copy line</button>
+    </div>`;
 
   renderBoard();
   activePanelKeys = {
@@ -2131,6 +2136,14 @@ function renderExplorer() {
     explState.sans = explState.sans.slice(0, +b.dataset.i);
     renderExplorer();
   }));
+  const copyText = (t, label) => {
+    const done = () => onStatus(label + " copied.");
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, () => onStatus("Copy failed."));
+    else onStatus(label + ": " + t);
+  };
+  $("explCopyFen").addEventListener("click", () => copyText(fen, "FEN"));
+  $("explCopyLine").addEventListener("click", () => copyText(
+    explState.sans.map((s, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${s}` : s)).join(" "), "Line"));
   const eg = $("explGames");
   if (eg) eg.addEventListener("click", () => openGamesList({
     title: "Games reaching this position", gameIds: stats.gameIds, jumpKey: key, back: renderExplorer,
