@@ -298,12 +298,21 @@
     }
 
     // Returns {cp, mate, best} from the side-to-move perspective.
+    // Serialized: concurrent callers (background grading + an on-demand
+    // grade + a board retry) queue up instead of corrupting the UCI stream.
     async evaluate(fen, depth) {
       const ck = depth + "|" + fen;
       if (this.cache.has(ck)) return this.cache.get(ck);
       const stored = await storage.get("evals", ck);
       if (stored) { this.cache.set(ck, stored); return stored; }
+      const run = () => this._evaluateNow(fen, ck, depth);
+      const p = (this._chain || Promise.resolve()).then(run, run);
+      this._chain = p.catch(noop);
+      return p;
+    }
 
+    async _evaluateNow(fen, ck, depth) {
+      if (this.cache.has(ck)) return this.cache.get(ck);
       if (this.restarting) await this.restarting;
       const w = this.worker;
       if (!w) throw new Error("engine not running");
@@ -412,7 +421,7 @@
   }
 
   // Walk a game, returning each of the user's moves with position context.
-  function extractUserMoves(game, username, maxMove) {
+  function extractUserMoves(game, username, maxMove, gameId) {
     const uname = username.toLowerCase();
     const white = ((game.white && game.white.username) || "").toLowerCase();
     const black = ((game.black && game.black.username) || "").toLowerCase();
@@ -439,12 +448,81 @@
           color: userColor,
           opening,
           url: game.url || "",
+          gameId: gameId != null ? gameId : null,
           terminalAfter: chess.game_over(),
           matedAfter: chess.in_checkmate(),
         });
       }
     }
     return out;
+  }
+
+  // ------------------------------ game index ------------------------------
+  // A lightweight record of every analyzed game, so aggregates can point back
+  // to the games they came from (win %, drill-down, game viewer, explorer).
+  // GameRec: { id, url, white, black, date, opening, result, userColor,
+  //            score (1/0.5/0/null from the user's side), sans: [SAN] }
+  function buildGameIndex(games, username) {
+    const uname = (username || "").toLowerCase();
+    const out = [];
+    for (let i = 0; i < games.length; i++) {
+      const g = games[i];
+      const white = (g.white && g.white.username) || "";
+      const black = (g.black && g.black.username) || "";
+      const userColor = white.toLowerCase() === uname ? "w" : black.toLowerCase() === uname ? "b" : null;
+      const result = pgnHeader(g.pgn, "Result") || "";
+      let score = null;
+      if (result === "1-0") score = userColor === "w" ? 1 : 0;
+      else if (result === "0-1") score = userColor === "b" ? 1 : 0;
+      else if (result === "1/2-1/2") score = 0.5;
+      out.push({
+        id: "g" + i, url: g.url || "", white, black,
+        date: pgnHeader(g.pgn, "Date") || pgnHeader(g.pgn, "UTCDate") || "",
+        opening: openingName(g.pgn), result, userColor,
+        score: userColor ? score : null,
+        sans: parseMoves(g.pgn),
+      });
+    }
+    return out;
+  }
+
+  // posKey → { gameIds: [], byMove: Map(uci → gameIds[]) } over every position
+  // (both turns) in the indexed games, up to maxPly. Rebuilt from the game
+  // index on load, never persisted.
+  function buildPosIndex(gameIndex, maxPly) {
+    maxPly = maxPly || 60;
+    const idx = new Map();
+    for (const g of gameIndex) {
+      const chess = new ChessCtor();
+      const seen = new Set(); // count each position once per game
+      for (let i = 0; i < g.sans.length && i < maxPly; i++) {
+        const key = posKey(chess.fen());
+        let mv;
+        try { mv = chess.move(g.sans[i], { sloppy: true }); } catch (e) { break; }
+        if (!mv) break;
+        const uci = mv.from + mv.to + (mv.promotion || "");
+        let node = idx.get(key);
+        if (!node) { node = { gameIds: [], byMove: new Map() }; idx.set(key, node); }
+        if (!seen.has(key)) { node.gameIds.push(g.id); seen.add(key); }
+        let list = node.byMove.get(uci);
+        if (!list) { list = []; node.byMove.set(uci, list); }
+        if (list[list.length - 1] !== g.id) list.push(g.id);
+      }
+    }
+    return idx;
+  }
+
+  // Win % across a set of game ids: { n, pct, w, d, l }. pct counts draws as
+  // half a win; games with unknown result are excluded.
+  function scoreStats(gameIds, gameById) {
+    let n = 0, sum = 0, w = 0, d = 0, l = 0;
+    for (const id of gameIds || []) {
+      const g = gameById.get ? gameById.get(id) : gameById[id];
+      if (!g || g.score == null) continue;
+      n++; sum += g.score;
+      if (g.score === 1) w++; else if (g.score === 0.5) d++; else l++;
+    }
+    return { n, pct: n ? Math.round((sum / n) * 100) : null, w, d, l };
   }
 
   // Split a multi-game PGN file into API-shaped game objects.
@@ -482,61 +560,105 @@
     return { cpl, best: pre.best, bestEval: bestNorm, level: classify(cpl, th) };
   }
 
-  // Analyze all user moves in `games`, aggregated by unique position.
-  // deps: { engine, onStatus?, onProgress?, control? } — set control.stop=true
-  // to end early with partial results.
-  async function runAnalysis(games, s, deps) {
-    const engine = deps.engine;
+  // Aggregate all user moves in `games` by unique position — NO engine.
+  // This is instant, so the UI can render counts/win% immediately and let
+  // grading happen in the background. Each play remembers a representative
+  // fenAfter (for grading later) and the games it came from.
+  function aggregatePositions(games, s) {
+    const positions = new Map();
+    for (let gi = 0; gi < games.length; gi++) {
+      for (const m of extractUserMoves(games[gi], s.username, s.maxMove, "g" + gi)) {
+        const key = posKey(m.fenBefore);
+        let p = positions.get(key);
+        if (!p) {
+          p = {
+            key, fen: m.fenBefore, moveNo: m.moveNo, color: m.color,
+            opening: m.opening, best: null, bestEval: null,
+            plays: new Map(), total: 0, url: m.url, graded: false,
+          };
+          positions.set(key, p);
+        }
+        let rec = p.plays.get(m.uci);
+        if (!rec) {
+          rec = {
+            uci: m.uci, san: m.san, count: 0, cplSum: 0, level: null,
+            gameIds: [], fenAfter: m.fenAfter,
+            terminalAfter: m.terminalAfter, matedAfter: m.matedAfter,
+          };
+          p.plays.set(m.uci, rec);
+        }
+        rec.count++;
+        if (m.gameId) rec.gameIds.push(m.gameId);
+        p.total++;
+      }
+    }
+    return finalize(positions, s);
+  }
+
+  // Engine-grade one aggregated position: one eval for the position plus one
+  // per distinct move tried from it (cheaper than the old per-occurrence pass).
+  async function gradePosition(r, s, engine) {
+    const pre = await engine.evaluate(r.fen, s.depth);
+    r.best = pre.best;
+    r.bestEval = normScore(pre);
+    let cplSum = 0;
+    for (const p of r.plays) {
+      let playedNorm;
+      if (p.matedAfter) playedNorm = MATE_SCORE;
+      else if (p.terminalAfter) playedNorm = 0;
+      else if (p.fenAfter) {
+        const post = await engine.evaluate(p.fenAfter, s.depth);
+        playedNorm = -normScore(post);
+      } else playedNorm = r.bestEval; // no fenAfter (old import) — treat as fine
+      let cpl = clamp(r.bestEval - playedNorm, 0, CPL_MAX);
+      if (p.uci === pre.best) cpl = 0;
+      p.level = classify(cpl, s.th);
+      p.cplSum = cpl * p.count;
+      cplSum += p.cplSum;
+    }
+    r.avgCpl = r.total ? cplSum / r.total : 0;
+    r.graded = true;
+  }
+
+  // Grade a list of positions in order, skipping already-graded ones.
+  // deps: { engine, onStatus?, onProgress?, onPosition?, control? }
+  async function gradePositions(list, s, deps) {
     const onStatus = deps.onStatus || noop;
     const onProgress = deps.onProgress || noop;
+    const onPosition = deps.onPosition || noop;
     const control = deps.control || {};
-
-    const all = [];
-    for (const g of games) {
-      for (const m of extractUserMoves(g, s.username, s.maxMove)) all.push(m);
-    }
-    onStatus(games.length + " games → " + all.length + " of your moves to analyze.");
-
-    const positions = new Map();
-    let done = 0, consecutiveFailures = 0;
-    for (const m of all) {
+    const todo = list.filter((r) => !r.graded);
+    let done = 0, failures = 0;
+    for (const r of todo) {
       if (control.stop) break;
-      let a;
       try {
-        a = await analyzeMove(m, s.depth, s.th, engine);
-        consecutiveFailures = 0;
+        await gradePosition(r, s, deps.engine);
+        failures = 0;
       } catch (e) {
         done++;
-        if (++consecutiveFailures >= ENGINE_MAX_CONSECUTIVE_FAILURES) {
+        if (++failures >= ENGINE_MAX_CONSECUTIVE_FAILURES) {
           throw new Error("Engine failing repeatedly (" + e.message + "); aborting. Partial results kept.");
         }
         continue;
       }
-      const key = posKey(m.fenBefore);
-      let p = positions.get(key);
-      if (!p) {
-        p = {
-          key, fen: m.fenBefore, moveNo: m.moveNo, color: m.color,
-          opening: m.opening, best: a.best, bestEval: a.bestEval,
-          plays: new Map(), total: 0, cplSum: 0, url: m.url,
-        };
-        positions.set(key, p);
-      }
-      p.best = a.best; p.bestEval = a.bestEval;
-      let rec = p.plays.get(m.uci);
-      if (!rec) { rec = { uci: m.uci, san: m.san, count: 0, cplSum: 0, level: a.level }; p.plays.set(m.uci, rec); }
-      rec.count++; rec.cplSum += a.cpl; rec.level = a.level;
-      p.total++; p.cplSum += a.cpl;
-
       done++;
-      if (done % 3 === 0 || done === all.length) {
-        onProgress(done / Math.max(1, all.length));
-        onStatus("Analyzing… " + done + "/" + all.length + " moves · " + positions.size + " unique positions");
-        await sleep(0); // yield to keep the UI responsive
+      onPosition(r);
+      if (done % 2 === 0 || done === todo.length) {
+        onProgress(done / Math.max(1, todo.length));
+        onStatus("Grading positions… " + done + "/" + todo.length);
+        await sleep(0);
       }
     }
     await storage.flush();
-    return finalize(positions, s);
+  }
+
+  // Back-compat one-shot: aggregate then grade everything.
+  async function runAnalysis(games, s, deps) {
+    const onStatus = deps.onStatus || noop;
+    const results = aggregatePositions(games, s);
+    onStatus(games.length + " games → " + results.length + " unique positions to grade.");
+    await gradePositions(results, s, deps);
+    return results;
   }
 
   // Turn the aggregation map into the Position[] the UI consumes.
@@ -549,7 +671,7 @@
         key: p.key, fen: p.fen, moveNo: p.moveNo, color: p.color, opening: p.opening,
         best: p.best, bestEval: p.bestEval, phase: ph.name, accept: ph.accept,
         total: p.total, badCount: 0, badShare: 0,
-        avgCpl: p.total ? p.cplSum / p.total : 0,
+        avgCpl: 0, graded: !!p.graded,
         plays: [...p.plays.values()].sort((a, b) => b.count - a.count),
         flagged: false, url: p.url,
       });
@@ -568,7 +690,7 @@
       let bad = 0;
       for (const p of r.plays) {
         const exempt = (ignoreBook && p.book) || customSet.has(r.key + "|" + p.uci);
-        if (p.level > ph.accept && !exempt) bad += p.count;
+        if (p.level != null && p.level > ph.accept && !exempt) bad += p.count;
       }
       r.badCount = bad;
       r.badShare = r.total ? bad / r.total : 0;
@@ -780,12 +902,14 @@
   }
 
   // ------------------------------ sessions / export ------------------------------
-  // extra: { rep?, mode? } — repertoire results and the active mode.
+  // extra: { rep?, mode?, gameIndex? } — repertoire results, active mode, and
+  // the game index (for win % / drill-down after a reload).
   function saveSession(username, results, extra) {
     extra = extra || {};
     return storage.set("sessions", "last", {
       savedAt: new Date().toISOString(), username, results,
       rep: extra.rep || null, mode: extra.mode || null,
+      gameIndex: extra.gameIndex || null,
     });
   }
 
@@ -808,6 +932,7 @@
       username, settings, results,
       rep: extra.rep || null,
       mode: extra.mode || null,
+      gameIndex: extra.gameIndex || null,
       courses: { imported: courseManager.imported, removedIds: courseManager.removedIds },
       evals,
       customBook: customBook.groups,
@@ -848,8 +973,9 @@
       savedAt: data.savedAt || new Date().toISOString(),
       username: summary.username,
       results, rep, mode: data.mode || null,
+      gameIndex: Array.isArray(data.gameIndex) ? data.gameIndex : null,
     });
-    return { results, rep, summary };
+    return { results, rep, gameIndex: Array.isArray(data.gameIndex) ? data.gameIndex : null, summary };
   }
 
   async function clearCaches(engine) {
@@ -1087,6 +1213,7 @@
         return Object.assign({
           type: "user-dev", posKey: key, fen: fenBefore, moveNo,
           played: { uci, san: mv.san }, expected, courseIds, plies: i,
+          gameId: opts.gameId || null,
         }, base);
       }
       // Opponent deviated — collect my next `windowSize` moves.
@@ -1104,6 +1231,7 @@
             fenBefore: wFen, fenAfter: chess.fen(),
             uci: wmv.from + wmv.to + (wmv.promotion || ""), san: wmv.san,
             moveNo: wMoveNo, color: userColor, opening, url,
+            gameId: opts.gameId || null,
             terminalAfter: chess.game_over(), matedAfter: chess.in_checkmate(),
           });
         }
@@ -1111,20 +1239,16 @@
       return Object.assign({
         type: "opp-dev", posKey: posKey(afterFen), fen: afterFen, prevFen: fenBefore, moveNo,
         theirMove: { uci, san: mv.san }, expected, courseIds, window, plies: i,
+        gameId: opts.gameId || null,
       }, base);
     }
     return Object.assign({ type: "book-end", plies: sans.length }, base);
   }
 
-  // Analyze all games against the active courses. Engine is used ONLY to
-  // grade the post-deviation windows (deps.getEngine is called lazily, so no
-  // engine ever loads when every game is user-dev/book-end).
-  // deps: { getEngine?, onStatus?, onProgress?, control? }
-  async function runRepertoireAnalysis(games, s, deps) {
-    deps = deps || {};
-    const onStatus = deps.onStatus || noop;
-    const onProgress = deps.onProgress || noop;
-    const control = deps.control || {};
+  // Classify all games against the active courses and aggregate — NO engine.
+  // Window positions are built ungraded (level null); gradeRepWindows fills
+  // them in later (background or on demand).
+  function classifyRepertoire(games, s) {
     const courses = activeCourses();
     if (!courses.length) throw new Error("No courses loaded. Add one under Settings → Repertoire courses.");
     const repByColor = { w: buildRepertoire(courses, "w"), b: buildRepertoire(courses, "b") };
@@ -1133,14 +1257,12 @@
     const counts = { games: games.length, userDev: 0, oppDev: 0, bookEnd: 0, unmatched: 0 };
     const passCounts = new Map();
     const classified = [];
-    for (const g of games) {
-      const c = classifyGame(g, s.username, repByColor, { windowSize: s.windowSize });
+    for (let gi = 0; gi < games.length; gi++) {
+      const c = classifyGame(games[gi], s.username, repByColor, { windowSize: s.windowSize, gameId: "g" + gi });
       classified.push(c);
       counts[{ "user-dev": "userDev", "opp-dev": "oppDev", "book-end": "bookEnd", unmatched: "unmatched" }[c.type]]++;
       for (const p of c.passThroughs) passCounts.set(p.key, (passCounts.get(p.key) || 0) + 1);
     }
-    onStatus(`${games.length} games: ${counts.userDev} you deviated, ${counts.oppDev} opponent deviated, ` +
-      `${counts.bookEnd} in-book, ${counts.unmatched} unmatched.`);
 
     // ---- aggregate: I deviated first ----
     const userDevMap = new Map();
@@ -1156,8 +1278,9 @@
         userDevMap.set(c.posKey, r);
       }
       let p = r.plays.get(c.played.uci);
-      if (!p) { p = { uci: c.played.uci, san: c.played.san, count: 0 }; r.plays.set(c.played.uci, p); }
+      if (!p) { p = { uci: c.played.uci, san: c.played.san, count: 0, gameIds: [] }; r.plays.set(c.played.uci, p); }
       p.count++;
+      if (c.gameId) p.gameIds.push(c.gameId);
       r.devCount++;
     }
     const userDev = [...userDevMap.values()].map((r) => {
@@ -1175,7 +1298,7 @@
       };
     });
 
-    // ---- aggregate: opponent deviated first ----
+    // ---- aggregate: opponent deviated first (windows ungraded) ----
     const oppDevMap = new Map();
     for (const c of classified) {
       if (c.type !== "opp-dev") continue;
@@ -1184,57 +1307,36 @@
         g = {
           kind: "opp-dev", key: c.posKey, fen: c.fen, prevFen: c.prevFen, moveNo: c.moveNo,
           color: c.userColor, opening: c.opening, theirMove: c.theirMove, expected: c.expected,
-          courseIds: c.courseIds, count: 0, url: c.url, windowMoves: [], positions: new Map(),
+          courseIds: c.courseIds, count: 0, gameIds: [], url: c.url, positions: new Map(),
         };
         oppDevMap.set(c.posKey, g);
       }
       g.count++;
-      for (const m of c.window) g.windowMoves.push(m);
-    }
-
-    // Engine pass over every window move (the only engine use in this mode).
-    const allWindow = [];
-    for (const g of oppDevMap.values()) for (const m of g.windowMoves) allWindow.push([g, m]);
-    if (allWindow.length && deps.getEngine) {
-      onStatus("Grading " + allWindow.length + " post-deviation moves with the engine…");
-      const engine = await deps.getEngine();
-      let done = 0, failures = 0;
-      for (const [g, m] of allWindow) {
-        if (control.stop) break;
-        let a;
-        try {
-          a = await analyzeMove(m, s.depth, s.th, engine);
-          failures = 0;
-        } catch (e) {
-          done++;
-          if (++failures >= ENGINE_MAX_CONSECUTIVE_FAILURES) {
-            throw new Error("Engine failing repeatedly (" + e.message + "); aborting. Partial results kept.");
-          }
-          continue;
-        }
+      if (c.gameId) g.gameIds.push(c.gameId);
+      for (const m of c.window) {
         const key = posKey(m.fenBefore);
         let p = g.positions.get(key);
         if (!p) {
           p = {
             kind: "opp-window", key, groupKey: g.key, fen: m.fenBefore, moveNo: m.moveNo,
-            color: m.color, opening: m.opening, best: a.best, bestEval: a.bestEval,
-            plays: new Map(), total: 0, cplSum: 0, url: m.url,
+            color: m.color, opening: m.opening, best: null, bestEval: null,
+            plays: new Map(), total: 0, url: m.url, graded: false,
           };
           g.positions.set(key, p);
         }
-        p.best = a.best; p.bestEval = a.bestEval;
         let rec = p.plays.get(m.uci);
-        if (!rec) { rec = { uci: m.uci, san: m.san, count: 0, cplSum: 0, level: a.level }; p.plays.set(m.uci, rec); }
-        rec.count++; rec.cplSum += a.cpl; rec.level = a.level;
-        p.total++; p.cplSum += a.cpl;
-        done++;
-        if (done % 3 === 0 || done === allWindow.length) {
-          onProgress(done / allWindow.length);
-          onStatus("Grading post-deviation moves… " + done + "/" + allWindow.length);
-          await sleep(0);
+        if (!rec) {
+          rec = {
+            uci: m.uci, san: m.san, count: 0, cplSum: 0, level: null,
+            gameIds: [], fenAfter: m.fenAfter,
+            terminalAfter: m.terminalAfter, matedAfter: m.matedAfter,
+          };
+          p.plays.set(m.uci, rec);
         }
+        rec.count++;
+        if (m.gameId) rec.gameIds.push(m.gameId);
+        p.total++;
       }
-      await storage.flush();
     }
 
     const oppDev = [...oppDevMap.values()].map((g) => {
@@ -1246,26 +1348,52 @@
           color: p.color, opening: p.opening, best: p.best, bestEval: p.bestEval,
           phase: pph.name, accept: pph.accept,
           total: p.total, badCount: 0, badShare: 0,
-          avgCpl: p.total ? p.cplSum / p.total : 0,
+          avgCpl: 0, graded: false,
           plays: [...p.plays.values()].sort((a, b) => b.count - a.count),
-          flagged: false, url: p.url, answerUcis: p.best ? [p.best] : [],
+          flagged: false, url: p.url, answerUcis: [],
         };
       }).sort((a, b) => a.moveNo - b.moveNo);
-      const moveTotal = positions.reduce((n, p) => n + p.total, 0);
-      const cplSum = positions.reduce((n, p) => n + p.plays.reduce((x, q) => x + q.cplSum, 0), 0);
       return {
         kind: g.kind, key: g.key, fen: g.fen, prevFen: g.prevFen, moveNo: g.moveNo,
         color: g.color, opening: g.opening, phase: ph.name, accept: ph.accept,
         theirMove: g.theirMove, expected: g.expected,
         courseIds: g.courseIds, courseName: courseName(g.courseIds[0]),
         multiCourse: g.courseIds.length > 1,
-        count: g.count, total: g.count, badCount: 0, badShare: 0,
-        avgCpl: moveTotal ? cplSum / moveTotal : 0,
-        positions, url: g.url, flagged: false,
+        count: g.count, total: g.count, gameIds: g.gameIds, badCount: 0, badShare: 0,
+        avgCpl: 0, positions, url: g.url, flagged: false,
       };
     });
 
     return { userDev, oppDev, counts, savedAt: new Date().toISOString() };
+  }
+
+  function repWindowPositions(rep) {
+    const out = [];
+    for (const g of rep.oppDev) for (const p of g.positions) out.push(p);
+    return out;
+  }
+
+  // Engine-grade every window position (the only engine use in this mode).
+  // deps: { engine, onStatus?, onProgress?, onPosition?, control? }
+  async function gradeRepWindows(rep, s, deps) {
+    const todo = repWindowPositions(rep).filter((p) => !p.graded);
+    if (!todo.length) return;
+    await gradePositions(todo, s, deps);
+    for (const p of todo) if (p.graded) p.answerUcis = p.best ? [p.best] : [];
+  }
+
+  // Back-compat one-shot: classify then grade all windows.
+  async function runRepertoireAnalysis(games, s, deps) {
+    deps = deps || {};
+    const rep = classifyRepertoire(games, s);
+    const c = rep.counts;
+    (deps.onStatus || noop)(`${c.games} games: ${c.userDev} you deviated, ${c.oppDev} opponent deviated, ` +
+      `${c.bookEnd} in-book, ${c.unmatched} unmatched.`);
+    if (deps.getEngine && repWindowPositions(rep).some((p) => !p.graded)) {
+      const engine = await deps.getEngine();
+      await gradeRepWindows(rep, s, Object.assign({}, deps, { engine }));
+    }
+    return rep;
   }
 
   // Re-derive flags for repertoire results — cheap, runs on every render so
@@ -1278,21 +1406,24 @@
       r.flagged = r.total >= s.minOcc && r.badShare >= s.flagShare && r.badCount > 0;
     }
     for (const g of rep.oppDev) {
-      let groupBad = 0, groupTotal = 0;
+      let groupBad = 0, groupTotal = 0, groupCpl = 0;
       for (const p of g.positions) {
         const ph = phaseOf(p.moveNo, s.phases);
         p.accept = ph.accept; p.phase = ph.name;
-        let bad = 0;
+        let bad = 0, cplSum = 0;
         for (const q of p.plays) {
-          if (q.level > ph.accept && !customSet.has(p.key + "|" + q.uci)) bad += q.count;
+          cplSum += q.cplSum || 0;
+          if (q.level != null && q.level > ph.accept && !customSet.has(p.key + "|" + q.uci)) bad += q.count;
         }
         p.badCount = bad;
         p.badShare = p.total ? bad / p.total : 0;
+        p.avgCpl = p.total ? cplSum / p.total : 0;
         p.flagged = p.badCount > 0;
-        groupBad += bad; groupTotal += p.total;
+        groupBad += bad; groupTotal += p.total; groupCpl += cplSum;
       }
       g.badCount = groupBad;
       g.badShare = groupTotal ? groupBad / groupTotal : 0;
+      g.avgCpl = groupTotal ? groupCpl / groupTotal : 0;
       g.flagged = g.count >= s.minOcc && groupBad > 0;
     }
   }
@@ -1328,6 +1459,48 @@
     return pool;
   }
 
+  // ------------------------------ line explorer ------------------------------
+  // Stats for one position while browsing course lines:
+  //   courseMoves — the course tree's moves here
+  //   stats       — win % over the games that reached this position
+  //   played      — every move actually played here across your games (either
+  //                 side, since whoever's turn it is made the move), with
+  //                 in-course flag and per-move win %
+  //   deviationPct— of the games where it was YOUR turn here, how often you
+  //                 played something off-course
+  // rep: merged course lookup from buildRepertoire (any color mix);
+  // gameById: Map(id → GameRec); posIndex from buildPosIndex.
+  function explorerStats(fen, rep, gameById, posIndex) {
+    const key = posKey(fen);
+    const turn = fen.split(" ")[1];
+    const repNode = rep.get(key);
+    const node = posIndex.get(key) || { gameIds: [], byMove: new Map() };
+    const courseMoves = repNode
+      ? [...repNode.moves].map(([uci, m]) => ({ uci, san: m.san, courseIds: [...m.courseIds] }))
+      : [];
+    const played = [];
+    let devN = 0, devTotal = 0;
+    for (const [uci, ids] of node.byMove) {
+      const inCourse = !!(repNode && repNode.moves.has(uci));
+      const userIds = ids.filter((id) => { const g = gameById.get(id); return g && g.userColor === turn; });
+      devTotal += userIds.length;
+      if (!inCourse) devN += userIds.length;
+      played.push({
+        uci, san: uciToSan(fen, uci) || uci, inCourse,
+        gameIds: ids, userTurn: userIds.length, stats: scoreStats(ids, gameById),
+      });
+    }
+    played.sort((a, b) => b.gameIds.length - a.gameIds.length);
+    return {
+      key, courseMoves, played,
+      gameIds: node.gameIds,
+      stats: scoreStats(node.gameIds, gameById),
+      userToMove: devTotal > 0,
+      deviationPct: devTotal ? Math.round((devN / devTotal) * 100) : null,
+      devTotal,
+    };
+  }
+
   function normalizeRepResults(rep) {
     if (!rep || !Array.isArray(rep.userDev) || !Array.isArray(rep.oppDev)) return null;
     rep.userDev = rep.userDev.filter((r) => r && r.fen && Array.isArray(r.plays));
@@ -1352,8 +1525,11 @@
     // engine + storage
     Engine, storage,
     // fetch / analysis
-    fetchGames, analyzeMove, runAnalysis, finalize, recomputeFlags, sortResults,
+    fetchGames, analyzeMove, runAnalysis, aggregatePositions, gradePosition,
+    gradePositions, finalize, recomputeFlags, sortResults,
     filterDrillPositions, shuffleCopy, normalizeResults,
+    // game index / explorer
+    buildGameIndex, buildPosIndex, scoreStats, explorerStats,
     // book
     bookMovesFor, annotateBook,
     // custom lines
@@ -1362,7 +1538,8 @@
     // repertoire mode
     courseManager, setBundledCourses, activeCourses, loadCourses, removeCourse,
     restoreRemovedCourses, courseFromChesslyRaw, courseFromLines, importCourse,
-    buildRepertoire, classifyGame, runRepertoireAnalysis, recomputeRepertoireFlags,
+    buildRepertoire, classifyGame, classifyRepertoire, gradeRepWindows,
+    repWindowPositions, runRepertoireAnalysis, recomputeRepertoireFlags,
     repertoireItems, repertoireDrillPool, normalizeRepResults,
     // sessions / backup
     saveSession, loadSession, buildExport, applyImport, clearCaches,

@@ -195,11 +195,40 @@ function fakeEngine(cpTable, bestTable) {
     }
   });
 
-  await atest("runAnalysis: control.stop yields partial results", async () => {
+  await atest("runAnalysis: control.stop still yields aggregated (ungraded) positions", async () => {
     const eng = fakeEngine({}, {});
-    const control = { stop: true }; // stop immediately
+    const control = { stop: true }; // stop before any grading
     const results = await CMT.runAnalysis([GAME], SETTINGS, { engine: eng, control });
-    assert.strictEqual(results.length, 0);
+    assert.ok(results.length > 0); // aggregation is engine-free and instant
+    assert.ok(results.every((r) => !r.graded && r.best == null));
+    assert.ok(results.every((r) => r.plays.every((p) => p.level == null)));
+  });
+
+  await atest("aggregate → gradePositions: counts and win-% inputs first, grades later", async () => {
+    const results = CMT.aggregatePositions([GAME], SETTINGS);
+    assert.ok(results.length > 0);
+    const r = results[0];
+    assert.strictEqual(r.graded, false);
+    assert.ok(r.plays[0].gameIds.length === 1 && r.plays[0].gameIds[0] === "g0");
+    await CMT.gradePositions(results, SETTINGS, { engine: fakeEngine({}, {}) });
+    assert.ok(results.every((x) => x.graded && x.best != null));
+    assert.ok(results.every((x) => x.plays.every((p) => p.level != null)));
+  });
+
+  test("buildGameIndex + buildPosIndex + scoreStats", () => {
+    const gi = CMT.buildGameIndex([GAME], "tester");
+    assert.strictEqual(gi.length, 1);
+    assert.strictEqual(gi[0].id, "g0");
+    assert.strictEqual(gi[0].userColor, "w");
+    assert.strictEqual(gi[0].score, 0); // Result 0-1, user was White
+    assert.deepStrictEqual(gi[0].sans.slice(0, 2), ["e4", "b6"]);
+    const idx = CMT.buildPosIndex(gi, 60);
+    const startKey = CMT.posKey("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    assert.deepStrictEqual(idx.get(startKey).gameIds, ["g0"]);
+    assert.deepStrictEqual(idx.get(startKey).byMove.get("e2e4"), ["g0"]);
+    const byId = new Map(gi.map((g) => [g.id, g]));
+    const st = CMT.scoreStats(["g0"], byId);
+    assert.deepStrictEqual(st, { n: 1, pct: 0, w: 0, d: 0, l: 1 });
   });
 
   console.log("flagging & exemptions");

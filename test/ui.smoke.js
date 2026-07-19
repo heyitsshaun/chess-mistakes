@@ -29,10 +29,12 @@ const combined = [
   "courses-data.js",
   "core.js",
   "themes.js",
+  "pieces.js",
   "app.js",
 ].map((f) => fs.readFileSync(path.join(root, f), "utf8")).join("\n;\n") + `
 ;window.__hooks = {
   renderList, retryMove, openDrillSetup, startDrill, exitDrillNow, setMode,
+  setGameIndex, openExplorer,
   setLastRep: (r) => { lastRep = r; },
   getState: () => ({ appMode, lastRep, lastResults, currentPos }),
 };`;
@@ -75,18 +77,18 @@ function check(name, fn) {
   // Synthetic games against the real Owen's Defense course (color b):
   // course expects 1.e4 e6; as black, play 1...b5 = user-dev. As white vs
   // London-ish… keep it simple: two user-devs + one opp-dev.
-  function mkGame(sans, white, black) {
+  function mkGame(sans, white, black, result) {
     const moves = sans.map((s, i) => (i % 2 === 0 ? `${i / 2 + 1}. ${s}` : s)).join(" ");
     return {
-      pgn: `[Event "Live Chess"]\n[White "${white}"]\n[Black "${black}"]\n\n${moves} *`,
+      pgn: `[Event "Live Chess"]\n[White "${white}"]\n[Black "${black}"]\n[Result "${result || "*"}"]\n[Date "2026.07.01"]\n\n${moves} ${result || "*"}`,
       rules: "chess", url: "https://chess.com/game/1",
       white: { username: white }, black: { username: black },
     };
   }
   const games = [
-    mkGame(["e4", "b5"], "opp", "tester"),            // I deviate (course: e6)
-    mkGame(["e4", "b5"], "opp", "tester"),            // same deviation again
-    mkGame(["e4", "e6", "Qh5", "Nf6"], "opp", "tester"), // opponent deviates (Qh5 not in course)
+    mkGame(["e4", "b5"], "opp", "tester", "1-0"),            // I deviate (course: e6); loss
+    mkGame(["e4", "b5"], "opp", "tester", "0-1"),            // same deviation; win
+    mkGame(["e4", "e6", "Qh5", "Nf6"], "opp", "tester", "0-1"), // opponent deviates (Qh5); win
   ];
   const fakeEngine = { cache: new Map(), evaluate: async () => ({ cp: 0, mate: null, best: "g8f6" }) };
 
@@ -113,6 +115,7 @@ function check(name, fn) {
   // engine grades (fake engine), so it's only visible with "show all".
   const H = window.__hooks;
   H.setLastRep(rep);
+  H.setGameIndex(CMT.buildGameIndex(games, "tester"));
   doc.getElementById("showAll").checked = true;
   H.renderList();
 
@@ -164,6 +167,49 @@ function check(name, fn) {
     const detail = doc.getElementById("detail").textContent;
     assert.ok(detail.includes("Position 1 of"));
     H.exitDrillNow();
+  });
+
+  check("win % + games drill-down + game viewer round trip", () => {
+    // open the user-dev card again
+    const card = [...doc.querySelectorAll("#results .card")].find((c) => c.textContent.includes("I deviated"));
+    card.click();
+    const detail = doc.getElementById("detail");
+    assert.ok(detail.querySelector(".win"), "win % cell missing");
+    assert.ok(detail.textContent.includes("50%"), "b5 win % should be 50% (1W 1L)");
+    // drill into the games for b5
+    detail.querySelector(".gbtn").click();
+    assert.ok(detail.textContent.includes("Games where you played b5"));
+    assert.strictEqual(detail.querySelectorAll(".grow").length, 2);
+    assert.ok(detail.querySelector(".resbadge.resW") && detail.querySelector(".resbadge.resL"));
+    // open a game, check the move strip, and navigate back up
+    detail.querySelector(".grow").click();
+    assert.ok(detail.querySelector("#gvMoves"), "game viewer missing");
+    assert.strictEqual(detail.querySelectorAll("#gvMoves .mv").length, 2); // e4 b5
+    doc.getElementById("gvBack").click();
+    assert.ok(detail.textContent.includes("Games where you played b5"), "back to games list failed");
+    doc.getElementById("glBack").click();
+    assert.ok(detail.textContent.includes("course"), "back to position panel failed");
+  });
+
+  check("line explorer walks the course with stats + deviation %", () => {
+    H.openExplorer();
+    const detail = doc.getElementById("detail");
+    assert.ok(detail.textContent.includes("Line explorer"));
+    assert.ok(detail.querySelector(".explmv"), "course move buttons missing");
+    assert.ok(detail.textContent.includes("Reached in 3 games"), "root stats wrong: " + detail.querySelector(".expl-stats").textContent.trim());
+    // step into 1.e4 — Owen's expects e6; I played b5 twice, e6 once
+    const e4 = [...detail.querySelectorAll(".explmv")].find((b) => b.textContent.trim().startsWith("e4"));
+    e4.click();
+    assert.ok(detail.textContent.includes("You deviate from the line when playing this position"), "deviation line missing");
+    assert.ok(detail.textContent.includes("67%"), "expected 67% deviation (2 of 3)");
+    assert.ok(detail.textContent.includes("Reached in 3 games"));
+    // games from here, then back to the explorer at the same node
+    doc.getElementById("explGames").click();
+    assert.ok(detail.textContent.includes("Games reaching this position"));
+    doc.getElementById("glBack").click();
+    assert.ok(detail.textContent.includes("Line explorer"), "back to explorer failed");
+    assert.ok(detail.querySelector(".crumb"), "move path breadcrumb missing");
+    doc.getElementById("explClose").click();
   });
 
   check("legacy mode toggle keeps working", () => {

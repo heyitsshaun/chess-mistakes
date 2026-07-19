@@ -46,6 +46,29 @@ Repertoire courses**. See `REPERTOIRE_MODE.md` for the full guide and
 A ⚠ *multi* tag means the position exists in more than one of your courses; the
 card names one of them.
 
+### Win %, games, and the game viewer
+
+Every moves table shows a **win %** per move (draws count half; hover for
+W/D/L) and a **games** button that drills into the exact games where you
+played it. Click a game to step through its moves on the board (the viewer
+jumps to the relevant position), then navigate back up. Works in both modes.
+
+### Line explorer
+
+**Line explorer** (next to Shuffle drill) walks a course tree chessly-style:
+pick a course, click through its moves (or play on the board), and at every
+position see the course's continuations, which games of yours reached it,
+your score there, every move actually played there (in-line vs off-book), and
+— when it's your move — *"you deviate from the line when playing this
+position X% of the time"*. Any games list clicks through to the viewer.
+
+### Background engine grading
+
+Results render the moment games are loaded (counts and win % need no engine).
+Stockfish grades fill in progressively in the background — opening a position
+bumps it to the front of the queue — and everything re-renders as grades
+arrive. Stop halts the background pass; it resumes on the next run/reload.
+
 ## Engine mode (legacy)
 
 1. Enter your **Chess.com username**.
@@ -138,6 +161,11 @@ per-browser-per-site; if you later deploy this with a backend, the storage layer
 
 ## Interface
 
+Chess pieces default to lichess's open-source **cburnett** set (fetched once
+from a CDN, cached for offline use; the built-in geometric "classic" set is
+the fallback). Settings → Appearance switches sets or loads your own: upload
+12 SVG/PNG files named `wK wQ wR wB wN wP bK bQ bR bB bN bP`.
+
 The UI ships with 8 built-in themes — dark: Midnight Club (default), Deep Forest,
 Charcoal Ember, Ocean Night; light: Blush Studio (default), Lavender Studio, Sage
 Morning, Paper & Ink. By default the app follows your system light/dark preference
@@ -167,6 +195,8 @@ The app is split so the UI can be overhauled without touching (or breaking) the 
   with `python3 chessly-import/build_courses_bundle.py` after adding crawls).
 - `themes.js` — theme engine: built-in + custom themes applied as CSS variables,
   system-preference mode, light/dark assignments, persistence and backup mirror.
+- `pieces.js` — piece-set manager (cburnett CDN fetch + cache, custom uploads,
+  classic fallback).
 - `app.js` — **thin UI layer.** Reads settings from inputs, renders the list/board/
   detail panels, wires events. Everything it does goes through the `CMT` API.
 - `index.html` / `styles.css` — layout and styling.

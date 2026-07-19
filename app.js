@@ -23,6 +23,11 @@ let isBookChecking = false;
 let gradingPromise = null;
 let interactionVersion = 0;
 const control = { stop: false };
+let gameIndex = null;          // GameRec[] for the loaded games
+let gameById = new Map();      // id → GameRec
+let posIndexCache = null;      // lazy posKey index for the explorer
+// Background engine grading: one queue, priority for whatever the user opens.
+const bg = { running: false, control: { stop: false }, priority: [] };
 const MODE_KEY = "cmt-mode";
 const DRILL_PREFS_KEY = "cmt-drill-prefs";
 const drillState = {
@@ -76,9 +81,11 @@ function setMode(mode, opts) {
   document.body.classList.toggle("mode-legacy", appMode === "legacy");
   if (!opts || !opts.silent) {
     if (drillState.active) exitDrillForDataChange();
+    stopBackgroundGrading();
     currentPos = null;
     $("detail").innerHTML = '<p class="empty">Select a position to review and retry it.</p>';
     renderList();
+    if (ungradedQueue().length) startBackgroundGrading();
   }
 }
 
@@ -140,31 +147,24 @@ async function run(games) {
         return;
       }
     }
+    // Aggregation/classification is engine-free and instant. Render right
+    // away; engine grading fills in as a background pass.
+    stopBackgroundGrading();
+    setGameIndex(CMT.buildGameIndex(games, s.username));
     if (appMode === "rep") {
-      // Engine loads lazily — only if some opponent deviated and there are
-      // post-deviation moves to grade.
-      lastRep = await CMT.runRepertoireAnalysis(games, s, {
-        getEngine: async () => { await ensureEngine(); return engine; },
-        onStatus, onProgress, control,
-      });
-      onProgress(1);
-      saveCurrentSession();
-      $("exportBtn").disabled = false;
-      renderList();
+      lastRep = CMT.classifyRepertoire(games, s);
       const c = lastRep.counts;
-      onStatus(`Done. ${c.games} games: you deviated first in ${c.userDev}, opponents in ${c.oppDev}; `
-        + `${c.bookEnd} stayed in book, ${c.unmatched} unmatched.${control.stop ? " (stopped early)" : ""}`);
+      onStatus(`${c.games} games: you deviated first in ${c.userDev}, opponents in ${c.oppDev}; `
+        + `${c.bookEnd} stayed in book, ${c.unmatched} unmatched.`);
     } else {
-      await ensureEngine();
-      lastResults = await CMT.runAnalysis(games, s, { engine, onStatus, onProgress, control });
-      onProgress(1);
-      if (s.bookMax > 0) await CMT.annotateBook(lastResults, s, { onStatus, control });
-      saveCurrentSession();
-      $("exportBtn").disabled = false;
-      renderList();
-      const flagged = lastResults.filter((r) => r.flagged).length;
-      onStatus(`Done. ${lastResults.length} unique positions analyzed, ${flagged} flagged.${control.stop ? " (stopped early)" : ""}`);
+      lastResults = CMT.aggregatePositions(games, s);
+      onStatus(`${games.length} games → ${lastResults.length} unique positions. Grading in background…`);
     }
+    onProgress(1);
+    saveCurrentSession();
+    $("exportBtn").disabled = false;
+    renderList();
+    startBackgroundGrading();
   } catch (e) {
     console.error(e);
     if (/Failed to fetch|NetworkError|CORS/i.test(e.message)) {
@@ -179,7 +179,112 @@ async function run(games) {
 }
 
 function saveCurrentSession() {
-  CMT.saveSession($("username").value.trim(), lastResults || [], { rep: lastRep, mode: appMode });
+  // Strip the game viewer's replay caches (_fens/_sans) before persisting.
+  const cleanIndex = (gameIndex || []).map((g) => {
+    const { _fens, _sans, ...rest } = g;
+    return rest;
+  });
+  CMT.saveSession($("username").value.trim(), lastResults || [], {
+    rep: lastRep, mode: appMode, gameIndex: cleanIndex,
+  });
+}
+
+function setGameIndex(gi) {
+  gameIndex = gi || null;
+  gameById = new Map((gi || []).map((g) => [g.id, g]));
+  posIndexCache = null;
+}
+
+function getPosIndex() {
+  if (!posIndexCache && gameIndex && gameIndex.length) {
+    posIndexCache = CMT.buildPosIndex(gameIndex, 60);
+  }
+  return posIndexCache;
+}
+
+// ----------------------------- background grading -----------------------------
+function ungradedQueue() {
+  if (appMode === "rep") {
+    return lastRep ? CMT.repWindowPositions(lastRep).filter((p) => !p.graded) : [];
+  }
+  if (!lastResults) return [];
+  return CMT.sortResults(lastResults.filter((r) => !r.graded), "occ");
+}
+
+function stopBackgroundGrading() {
+  bg.control.stop = true;
+  bg.priority = [];
+}
+
+async function startBackgroundGrading() {
+  if (bg.running) return;
+  if (!ungradedQueue().length && !bg.priority.length) { onBgDone(); return; }
+  const myControl = { stop: false };
+  bg.control = myControl;
+  bg.running = true;
+  const modeAtStart = appMode;
+  try {
+    await ensureEngine();
+    const s = readSettings();
+    let renderTimer = null;
+    const deps = {
+      engine, control: myControl,
+      onStatus: (t) => onStatus(t),
+      onPosition: (r) => {
+        if (currentPos && currentPos.key === r.key && !drillState.active && !gradingPromise) refreshCurrentDetail();
+        if (!renderTimer) renderTimer = setTimeout(() => { renderTimer = null; if (!drillState.active) renderList(); }, 1500);
+      },
+    };
+    let graded = 0;
+    while (!myControl.stop && appMode === modeAtStart) {
+      const r = bg.priority.shift() || ungradedQueue()[0];
+      if (!r) break;
+      await CMT.gradePositions([r], s, deps);
+      if (r.graded && r.kind === "opp-window") r.answerUcis = r.best ? [r.best] : [];
+      graded++;
+      if (graded % 10 === 0) saveCurrentSession();
+      onProgress(1 - ungradedQueue().length / Math.max(1, graded + ungradedQueue().length));
+    }
+    saveCurrentSession();
+    if (!myControl.stop) onBgDone();
+  } catch (e) {
+    onStatus("Background grading stopped: " + e.message);
+  } finally {
+    bg.running = false;
+    if (!drillState.active) renderList();
+    refreshDrillAvailability();
+  }
+}
+
+function onBgDone() {
+  onProgress(1);
+  if (appMode === "rep" && lastRep) {
+    if (!ungradedQueue().length && CMT.repWindowPositions(lastRep).length) {
+      onStatus("All post-deviation replies graded.");
+    }
+  } else if (appMode === "legacy" && lastResults) {
+    onStatus("All " + lastResults.length + " positions graded.");
+  }
+  // Legacy mode: book annotation after grading, as before.
+  if (appMode === "legacy" && lastResults) {
+    const s = readSettings();
+    if (s.bookMax > 0 && lastResults.some((r) => r.moveNo <= s.bookMax && !r.bookKnown)) {
+      isBookChecking = true;
+      CMT.annotateBook(lastResults, s, { onStatus, control: bg.control })
+        .then(() => { saveCurrentSession(); onStatus("Opening-book check complete."); })
+        .catch((e) => onStatus("Opening-book check could not finish: " + e.message))
+        .then(() => { isBookChecking = false; if (!drillState.active) renderList(); });
+    }
+  }
+}
+
+// Re-render whatever detail panel is currently open (after its grade arrives).
+function refreshCurrentDetail() {
+  const r = currentPos;
+  if (!r) return;
+  const el = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === (r.groupKey || r.key));
+  if (r.kind === "opp-window") selectOppWindow(r);
+  else selectPosition(r, el || null);
 }
 
 // ----------------------------- SVG pieces -----------------------------
@@ -216,13 +321,16 @@ function pieceInner(pc) {
   return `<g fill="${f}" stroke="${st}" stroke-width="1.6" stroke-linejoin="round">${body}</g>`;
 }
 function pieceSVG(pc) {
+  const u = typeof Pieces !== "undefined" && Pieces.url(pc);
+  if (u) return `<img class="piece" src="${u}" alt="" draggable="false" />`;
   return `<svg class="piece" viewBox="0 0 45 45" aria-hidden="true">${pieceInner(pc)}</svg>`;
 }
 
 // ----------------------------- results list -----------------------------
 const miniBoardCache = new Map();
 function miniBoardSVG(fen, orient) {
-  const ck = orient + "|" + fen;
+  const setId = typeof Pieces !== "undefined" ? Pieces.id() : "classic";
+  const ck = setId + "|" + orient + "|" + fen;
   let svg = miniBoardCache.get(ck);
   if (svg) return svg;
   const grid = CMT.fenToGrid(fen);
@@ -235,7 +343,12 @@ function miniBoardSVG(fen, orient) {
       const x = dc * 10, y = dr * 10;
       cells += `<rect x="${x}" y="${y}" width="10" height="10" class="${light ? "ml" : "md"}"/>`;
       const pc = grid[r][c];
-      if (pc) cells += `<svg x="${x}" y="${y}" width="10" height="10" viewBox="0 0 45 45">${pieceInner(pc)}</svg>`;
+      if (pc) {
+        const u = typeof Pieces !== "undefined" && Pieces.url(pc);
+        cells += u
+          ? `<image x="${x}" y="${y}" width="10" height="10" href="${u}"/>`
+          : `<svg x="${x}" y="${y}" width="10" height="10" viewBox="0 0 45 45">${pieceInner(pc)}</svg>`;
+      }
     }
   }
   svg = `<svg viewBox="0 0 80 80" width="64" height="64" xmlns="http://www.w3.org/2000/svg">
@@ -247,7 +360,9 @@ function miniBoardSVG(fen, orient) {
 
 const GRADE_VARS = ["--best", "--excellent", "--good", "--inacc", "--mistake", "--blunder"];
 function pills(level, isBook, isIgnored) {
-  let h = `<span class="pill ${LEVELS[level]}">${LEVELS[level]}</span>`;
+  let h = level == null
+    ? '<span class="pill Pending" title="Engine grade pending">…</span>'
+    : `<span class="pill ${LEVELS[level]}">${LEVELS[level]}</span>`;
   if (isBook) h += ' <span class="pill Book">Book</span>';
   if (isIgnored) h += ' <span class="pill Ignored">Ignored</span>';
   return h;
@@ -940,6 +1055,7 @@ function selectPosition(r, cardEl) {
     onStatus("Wait for the current move to finish grading before changing positions.");
     return;
   }
+  requestPriorityGrade(r);
   if (r.kind === "user-dev") return selectUserDev(r, cardEl);
   if (r.kind === "opp-dev") return selectOppDev(r, cardEl);
   if (r.kind === "opp-window") return selectOppWindow(r);
@@ -957,9 +1073,11 @@ function selectPosition(r, cardEl) {
   const histRows = r.plays.map((p) => {
     const ig = CMT.customBook.set.has(r.key + "|" + p.uci);
     return `<tr><td><b>${CMT.escapeHtml(p.san)}</b></td><td>${p.count}</td>
+      <td>${winCellHtml(p.gameIds)}</td>
       <td>${pills(p.level, p.book, ig)}</td>
-      <td class="evalnum">${(p.cplSum / p.count).toFixed(0)}cp</td>
-      <td><button class="igbtn" data-uci="${p.uci}" data-san="${CMT.escapeHtml(p.san)}">${ig ? "unignore" : "ignore"}</button></td></tr>`;
+      <td class="evalnum">${p.level == null ? "…" : (p.cplSum / p.count).toFixed(0) + "cp"}</td>
+      <td class="rowbtns"><button class="igbtn gbtn" data-uci="${p.uci}">games</button>
+        <button class="igbtn" data-uci="${p.uci}" data-san="${CMT.escapeHtml(p.san)}">${ig ? "unignore" : "ignore"}</button></td></tr>`;
   }).join("");
 
   const idx = currentList.indexOf(r);
@@ -970,21 +1088,20 @@ function selectPosition(r, cardEl) {
       <button class="iconbtn backbtn" id="backBtn" aria-label="Back to list">←</button>
       <div>
         <h2>${r.opening ? CMT.escapeHtml(r.opening) + " · " : ""}Move ${r.moveNo}</h2>
-        <div class="statline">${r.phase} · ${r.color === "w" ? "White" : "Black"} to move · seen ${r.total}× · bad <span id="badPct">0%</span></div>
+        <div class="statline">${r.phase} · ${r.color === "w" ? "White" : "Black"} to move · seen ${r.total}× · bad <span id="badPct">0%</span>${r.graded ? "" : ' · <span class="hint">grading…</span>'}</div>
       </div>
     </div>
     <div class="board-wrap">
       <div id="board" class="board"></div>
       <div id="feedback" class="feedback" aria-live="polite">Your move. Play the move you think is best.</div>
       <div class="btnrow mobile-actions">
-        <button id="showBest">Show best</button>
+        <button id="showBest" ${r.best ? "" : "disabled"}>Show best</button>
         <button id="resetBoard">Reset</button>
         <button id="nextPos" class="next" ${hasNext ? "" : "disabled"}>Next →</button>
-        ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
       </div>
     </div>
     <table class="hist">
-      <thead><tr><th>Your moves here</th><th>#</th><th>Grade</th><th>Avg loss</th><th></th></tr></thead>
+      <thead><tr><th>Your moves here</th><th>#</th><th>Win</th><th>Grade</th><th>Avg loss</th><th></th></tr></thead>
       <tbody>${histRows}</tbody>
     </table>`;
 
@@ -994,15 +1111,19 @@ function selectPosition(r, cardEl) {
   $("backBtn").addEventListener("click", () => {
     requestCloseTrainer();
   });
-  document.querySelectorAll(".igbtn").forEach((b) => b.addEventListener("click", () => {
+  const reopen = () => {
+    const el2 = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === r.key);
+    selectPosition(r, el2 || null);
+  };
+  document.querySelectorAll(".igbtn:not(.gbtn)").forEach((b) => b.addEventListener("click", () => {
     CMT.toggleManualIgnore(r, b.dataset.uci, b.dataset.san);
     renderCustomBook();
     renderList();
-    const el2 = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === r.key);
-    selectPosition(r, el2 || null);
+    reopen();
   }));
+  wireGamesButtons(r, reopen);
   $("showBest").addEventListener("click", () => {
-    if (gradingPromise) return;
+    if (gradingPromise || !r.best) return;
     boardState.best = r.best;
     drawArrow();
     const bestSan = CMT.uciToSan(r.fen, r.best) || r.best || "?";
@@ -1022,6 +1143,162 @@ function selectPosition(r, cardEl) {
   });
 
   openTrainer();
+}
+
+// ----------------------------- games drill-down -----------------------------
+function winCellHtml(gameIds) {
+  if (!gameIds || !gameIds.length || !gameById.size) return '<span class="hint">–</span>';
+  const st = CMT.scoreStats(gameIds, gameById);
+  if (!st.n) return '<span class="hint">–</span>';
+  const cls = st.pct >= 55 ? "wgood" : st.pct <= 45 ? "wbad" : "";
+  return `<span class="win ${cls}" title="${st.w}W ${st.d}D ${st.l}L">${st.pct}%</span>`;
+}
+
+function resultBadge(g) {
+  const r = g.score === 1 ? "W" : g.score === 0 ? "L" : g.score === 0.5 ? "D" : "?";
+  return `<span class="resbadge res${r}">${r}</span>`;
+}
+
+// List of games (from ids) rendered into the detail panel. `back` restores
+// the previous panel.
+function openGamesList(opts) {
+  const ids = (opts.gameIds || []).filter((id) => gameById.has(id));
+  const st = CMT.scoreStats(ids, gameById);
+  const rows = ids.map((id) => {
+    const g = gameById.get(id);
+    const opp = g.userColor === "w" ? g.black : g.white;
+    return `<tr class="grow" data-id="${id}" role="button" tabindex="0">
+      <td>${resultBadge(g)}</td>
+      <td><b>${CMT.escapeHtml(opp || "?")}</b><span class="hint"> · ${g.userColor === "w" ? "White" : "Black"}</span></td>
+      <td class="hint">${CMT.escapeHtml(g.date || "")}</td>
+      <td>${g.url ? `<a href="${g.url}" target="_blank" rel="noopener" class="hint" onclick="event.stopPropagation()">↗</a>` : ""}</td>
+    </tr>`;
+  }).join("");
+  $("detail").innerHTML = `
+    <div class="detail-head">
+      <button class="iconbtn backbtn" id="glBack" aria-label="Back">←</button>
+      <div>
+        <h2>${opts.title || "Games"}</h2>
+        <div class="statline">${ids.length} game${ids.length === 1 ? "" : "s"}${st.n ? ` · score ${st.pct}% (${st.w}W ${st.d}D ${st.l}L)` : ""}</div>
+      </div>
+    </div>
+    ${ids.length ? `<table class="hist games">
+      <thead><tr><th></th><th>Opponent</th><th>Date</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : '<p class="hint">No games on record for this move (imported results without game data?).</p>'}
+    <p class="hint">Click a game to step through its moves.</p>`;
+  $("glBack").addEventListener("click", opts.back);
+  document.querySelectorAll(".grow").forEach((row) => {
+    const open = () => {
+      const g = gameById.get(row.dataset.id);
+      const jump = opts.jumpKey && g ? plyOfPosition(g, opts.jumpKey) : undefined;
+      openGameViewer(row.dataset.id, () => openGamesList(opts), jump);
+    };
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+  });
+  openTrainer();
+}
+
+// Step-through viewer for one game. `back` restores the games list (or
+// whatever opened it). jumpPly (optional) starts at that half-move.
+function openGameViewer(gameId, back, jumpPly) {
+  const g = gameById.get(gameId);
+  if (!g) return;
+  if (!g._fens) { // replay once, cache positions
+    const c = new Chess();
+    g._fens = [c.fen()];
+    g._sans = [];
+    for (const san of g.sans) {
+      let mv; try { mv = c.move(san, { sloppy: true }); } catch (e) { break; }
+      if (!mv) break;
+      g._sans.push(mv.san);
+      g._fens.push(c.fen());
+    }
+  }
+  let ply = Math.min(Math.max(0, jumpPly != null ? jumpPly : 0), g._sans.length);
+  const opp = g.userColor === "w" ? g.black : g.white;
+  interactionVersion++;
+  currentPos = null;
+
+  const movesHtml = g._sans.map((san, i) =>
+    `${i % 2 === 0 ? `<span class="mvno">${i / 2 + 1}.</span>` : ""}<button class="mv" data-ply="${i + 1}">${CMT.escapeHtml(san)}</button>`
+  ).join(" ");
+  $("detail").innerHTML = `
+    <div class="detail-head">
+      <button class="iconbtn backbtn" id="gvBack" aria-label="Back">←</button>
+      <div>
+        <h2>${resultBadge(g)} vs ${CMT.escapeHtml(opp || "?")}</h2>
+        <div class="statline">${g.userColor === "w" ? "White" : "Black"} · ${CMT.escapeHtml(g.opening || "")}${g.date ? " · " + CMT.escapeHtml(g.date) : ""}
+          ${g.url ? ` · <a href="${g.url}" target="_blank" rel="noopener">chess.com ↗</a>` : ""}</div>
+      </div>
+    </div>
+    <div class="board-wrap">
+      <div id="board" class="board"></div>
+      <div class="btnrow mobile-actions">
+        <button id="gvStart">⏮</button>
+        <button id="gvPrev">←</button>
+        <button id="gvNext" class="next">→</button>
+        <button id="gvEnd">⏭</button>
+      </div>
+    </div>
+    <div class="gv-moves" id="gvMoves">${movesHtml}</div>`;
+
+  boardState.chess = new Chess(g._fens[ply]);
+  boardState.orient = g.userColor || "w";
+  boardState.sel = null; boardState.best = null;
+  boardState.locked = true; boardState.onMove = null;
+
+  const sync = () => {
+    boardState.chess = new Chess(g._fens[ply]);
+    boardState.best = null;
+    renderBoard();
+    document.querySelectorAll("#gvMoves .mv").forEach((b) => b.classList.toggle("cur", +b.dataset.ply === ply));
+    const cur = document.querySelector("#gvMoves .mv.cur");
+    if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: "nearest" });
+  };
+  sync();
+  $("gvBack").addEventListener("click", back);
+  $("gvStart").addEventListener("click", () => { ply = 0; sync(); });
+  $("gvPrev").addEventListener("click", () => { ply = Math.max(0, ply - 1); sync(); });
+  $("gvNext").addEventListener("click", () => { ply = Math.min(g._sans.length, ply + 1); sync(); });
+  $("gvEnd").addEventListener("click", () => { ply = g._sans.length; sync(); });
+  document.querySelectorAll("#gvMoves .mv").forEach((b) =>
+    b.addEventListener("click", () => { ply = +b.dataset.ply; sync(); }));
+  openTrainer();
+}
+
+// Find the ply at which `fen`'s position occurs in a game (for jump-to-move).
+function plyOfPosition(g, key) {
+  const c = new Chess();
+  for (let i = 0; i < g.sans.length; i++) {
+    if (CMT.posKey(c.fen()) === key) return i;
+    let mv; try { mv = c.move(g.sans[i], { sloppy: true }); } catch (e) { break; }
+    if (!mv) break;
+  }
+  return 0;
+}
+
+// Wire every ".gbtn" in the current detail panel to open the games list for
+// that play of position `r`; `back` re-renders the panel.
+function wireGamesButtons(r, back) {
+  document.querySelectorAll(".gbtn").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const play = r.plays.find((p) => p.uci === b.dataset.uci);
+    if (!play) return;
+    openGamesList({
+      title: `Games where you played ${play.san}`,
+      gameIds: play.gameIds || [], jumpKey: r.key, back,
+    });
+  }));
+}
+
+// Ask the background grader to do this position next.
+function requestPriorityGrade(r) {
+  if (!r || r.graded || r.kind === "user-dev") return;
+  const targets = r.kind === "opp-dev" ? r.positions.filter((p) => !p.graded) : [r];
+  for (const t of targets) if (!bg.priority.includes(t)) bg.priority.unshift(t);
+  if (targets.length) startBackgroundGrading();
 }
 
 // ---- repertoire detail panels ----
@@ -1094,7 +1371,9 @@ function selectUserDev(r, cardEl) {
   setupBoardFor(r);
   const histRows = r.plays.map((p) => `
     <tr><td><b>${CMT.escapeHtml(p.san)}</b></td><td>${p.count}</td>
-    <td><span class="pill OffBook">Off-book</span></td></tr>`).join("");
+    <td>${winCellHtml(p.gameIds)}</td>
+    <td><span class="pill OffBook">Off-book</span></td>
+    <td class="rowbtns"><button class="igbtn gbtn" data-uci="${p.uci}">games</button></td></tr>`).join("");
   const idx = currentList.indexOf(r);
   const hasNext = idx >= 0 && idx < currentList.length - 1;
   $("detail").innerHTML = `
@@ -1117,12 +1396,13 @@ function selectUserDev(r, cardEl) {
     </div>
     <p class="hint">Course continues with <b>${expectedSans(r)}</b>.</p>
     <table class="hist">
-      <thead><tr><th>What you played instead</th><th>#</th><th></th></tr></thead>
+      <thead><tr><th>What you played instead</th><th>#</th><th>Win</th><th></th><th></th></tr></thead>
       <tbody>${histRows}</tbody>
     </table>`;
   renderBoard();
   countUp($("badPct"), Math.round(r.badShare * 100), "%");
   wireDetailCommon(r);
+  wireGamesButtons(r, () => selectUserDev(r, cardEl));
   openTrainer();
 }
 
@@ -1135,11 +1415,14 @@ function selectOppDev(g, cardEl) {
   const theirExpected = (g.expected || []).map((e) => CMT.escapeHtml(e.san)).join(" or ");
   const rows = g.positions.map((p, i) => {
     const worst = p.plays[0];
+    const posGameIds = [];
+    for (const q of p.plays) for (const id of q.gameIds || []) posGameIds.push(id);
     return `<tr class="wrow" data-i="${i}" role="button" tabindex="0">
       <td>${p.moveNo}</td>
       <td><b>${CMT.escapeHtml(worst ? worst.san : "?")}</b>${p.plays.length > 1 ? ` <span class="hint">+${p.plays.length - 1}</span>` : ""}</td>
+      <td>${winCellHtml(posGameIds)}</td>
       <td>${worst ? pills(worst.level, false, CMT.customBook.set.has(p.key + "|" + worst.uci)) : ""}</td>
-      <td class="evalnum">${p.total ? (p.plays.reduce((n, q) => n + q.cplSum, 0) / p.total).toFixed(0) + "cp" : ""}</td>
+      <td class="evalnum">${p.graded && p.total ? (p.plays.reduce((n, q) => n + q.cplSum, 0) / p.total).toFixed(0) + "cp" : "…"}</td>
       <td>${p.total}×</td></tr>`;
   }).join("");
   const idx = currentList.indexOf(g);
@@ -1149,7 +1432,8 @@ function selectOppDev(g, cardEl) {
       <button class="iconbtn backbtn" id="backBtn" aria-label="Back to list">←</button>
       <div>
         <h2>${CMT.escapeHtml(g.courseName || "Course")}${g.multiCourse ? " ⚠" : ""} · Move ${g.moveNo}</h2>
-        <div class="statline">Opponents played <b>${CMT.escapeHtml(g.theirMove.san)}</b> ${g.count}× (course prepares for ${theirExpected || "—"})</div>
+        <div class="statline">Opponents played <b>${CMT.escapeHtml(g.theirMove.san)}</b> ${g.count}× (course prepares for ${theirExpected || "—"})
+          · score ${winCellHtml(g.gameIds)} <button class="igbtn" id="groupGames">games</button></div>
       </div>
     </div>
     <div class="board-wrap">
@@ -1163,13 +1447,19 @@ function selectOppDev(g, cardEl) {
       </div>
     </div>
     ${g.positions.length ? `
-    <p class="hint">Your graded replies over the next moves (click one to load it):</p>
+    <p class="hint">Your replies over the next moves (click one to load it):</p>
     <table class="hist">
-      <thead><tr><th>Move</th><th>You played</th><th>Grade</th><th>Avg loss</th><th>#</th></tr></thead>
+      <thead><tr><th>Move</th><th>You played</th><th>Win</th><th>Grade</th><th>Avg loss</th><th>#</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>` : `<p class="hint">No graded replies (analysis was stopped before grading, or the games ended immediately).</p>`}`;
+    </table>` : `<p class="hint">No replies on record (the games ended immediately after the deviation).</p>`}`;
   renderBoard();
   wireDetailCommon(first || g);
+  const reopenGroup = () => selectOppDev(g, cardEl);
+  const gg = $("groupGames");
+  if (gg) gg.addEventListener("click", () => openGamesList({
+    title: `Games where they played ${g.theirMove.san}`,
+    gameIds: g.gameIds || [], jumpKey: g.key, back: reopenGroup,
+  }));
   document.querySelectorAll(".wrow").forEach((row) => {
     const open = () => selectOppWindow(g.positions[+row.dataset.i], g);
     row.addEventListener("click", open);
@@ -1180,13 +1470,16 @@ function selectOppDev(g, cardEl) {
 
 function selectOppWindow(p, group) {
   group = group || (lastRep && lastRep.oppDev.find((g) => g.key === p.groupKey)) || null;
+  requestPriorityGrade(p);
   setupBoardFor(p);
   const histRows = p.plays.map((q) => {
     const ig = CMT.customBook.set.has(p.key + "|" + q.uci);
     return `<tr><td><b>${CMT.escapeHtml(q.san)}</b></td><td>${q.count}</td>
+      <td>${winCellHtml(q.gameIds)}</td>
       <td>${pills(q.level, false, ig)}</td>
-      <td class="evalnum">${(q.cplSum / q.count).toFixed(0)}cp</td>
-      <td><button class="igbtn" data-uci="${q.uci}" data-san="${CMT.escapeHtml(q.san)}">${ig ? "unignore" : "ignore"}</button></td></tr>`;
+      <td class="evalnum">${q.level == null ? "…" : (q.cplSum / q.count).toFixed(0) + "cp"}</td>
+      <td class="rowbtns"><button class="igbtn gbtn" data-uci="${q.uci}">games</button>
+        <button class="igbtn" data-uci="${q.uci}" data-san="${CMT.escapeHtml(q.san)}">${ig ? "unignore" : "ignore"}</button></td></tr>`;
   }).join("");
   $("detail").innerHTML = `
     <div class="detail-head">
@@ -1207,7 +1500,7 @@ function selectOppWindow(p, group) {
       </div>
     </div>
     <table class="hist">
-      <thead><tr><th>Your moves here</th><th>#</th><th>Grade</th><th>Avg loss</th><th></th></tr></thead>
+      <thead><tr><th>Your moves here</th><th>#</th><th>Win</th><th>Grade</th><th>Avg loss</th><th></th></tr></thead>
       <tbody>${histRows}</tbody>
     </table>`;
   renderBoard();
@@ -1218,12 +1511,13 @@ function selectOppWindow(p, group) {
     const el2 = [...document.querySelectorAll(".card")].find((c) => c.dataset.key === group.key);
     selectOppDev(group, el2 || null);
   });
-  document.querySelectorAll(".igbtn").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".igbtn:not(.gbtn)").forEach((b) => b.addEventListener("click", () => {
     CMT.toggleManualIgnore(p, b.dataset.uci, b.dataset.san);
     renderCustomBook();
     renderList();
     selectOppWindow(p, group);
   }));
+  wireGamesButtons(p, () => selectOppWindow(p, group));
   openTrainer();
 }
 
@@ -1533,6 +1827,7 @@ async function restoreSession() {
   if (!saved) return;
   lastResults = saved.results && saved.results.length ? saved.results : null;
   lastRep = saved.rep || null;
+  setGameIndex(saved.gameIndex || null);
   if (saved.username) $("username").value = saved.username;
   $("exportBtn").disabled = false;
   const cached = await CMT.storage.count("evals");
@@ -1541,24 +1836,150 @@ async function restoreSession() {
     : `${(saved.results || []).length} positions`;
   onStatus(`Restored last analysis (${saved.username || "?"}, ${what}). ${cached} cached evals on disk.`);
   renderList();
-  // Legacy results may still need their opening-book pass.
-  if (appMode === "legacy" && lastResults) {
-    const s = readSettings();
-    const needsBook = s.bookMax > 0 && lastResults.some((r) => r.moveNo <= s.bookMax && !r.bookKnown);
-    isBookChecking = needsBook;
-    if (needsBook) {
-      try {
-        await CMT.annotateBook(lastResults, s, { onStatus, control });
-        saveCurrentSession();
-        onStatus("Opening-book check complete.");
-      } catch (e) {
-        onStatus("Opening-book check could not finish: " + e.message);
-      } finally {
-        isBookChecking = false;
-        renderList();
-      }
-    }
+  // Resume any grading (and, in legacy mode, book annotation) left unfinished.
+  if (ungradedQueue().length) startBackgroundGrading();
+  else onBgDone();
+}
+
+// ----------------------------- line explorer -----------------------------
+// Browse a course tree move by move; at every position see the games that
+// followed the line this far, their win %, and how often you deviate here.
+const explState = { courseId: null, sans: [], _repCache: {} };
+
+function explorerRep(course) {
+  if (!explState._repCache[course.id]) {
+    explState._repCache[course.id] = CMT.buildRepertoire([course], course.color);
   }
+  return explState._repCache[course.id];
+}
+
+function openExplorer() {
+  if (drillState.active) return;
+  const courses = CMT.activeCourses();
+  if (!courses.length) { onStatus("Load a course first (Settings → Repertoire courses)."); return; }
+  if (!explState.courseId || !courses.some((c) => c.id === explState.courseId)) {
+    explState.courseId = courses[0].id;
+    explState.sans = [];
+  }
+  renderExplorer();
+}
+
+function closeExplorer() {
+  currentPos = null;
+  $("detail").innerHTML = '<p class="empty">Select a position to review and retry it.</p>';
+  renderList();
+}
+
+function renderExplorer() {
+  const courses = CMT.activeCourses();
+  const course = courses.find((c) => c.id === explState.courseId) || courses[0];
+  explState.courseId = course.id;
+  const rep = explorerRep(course);
+
+  // Replay the path (dropping anything now-invalid, e.g. after course switch).
+  const chess = new Chess();
+  const ok = [];
+  for (const san of explState.sans) {
+    let mv; try { mv = chess.move(san, { sloppy: true }); } catch (e) { mv = null; }
+    if (!mv) break;
+    ok.push(mv.san);
+  }
+  explState.sans = ok;
+  const fen = chess.fen();
+  const key = CMT.posKey(fen);
+  const node = rep.get(key);
+  const pi = getPosIndex();
+  const stats = pi ? CMT.explorerStats(fen, rep, gameById, pi) : null;
+  const playedBy = new Map((stats ? stats.played : []).map((p) => [p.uci, p]));
+  const userTurn = fen.split(" ")[1] === course.color;
+
+  const courseMoveBtns = node && node.moves.size
+    ? [...node.moves].map(([uci, m]) => {
+        const pl = playedBy.get(uci);
+        const meta = pl ? ` <span class="hint">${pl.gameIds.length}g · ${pl.stats.pct != null ? pl.stats.pct + "%" : "–"}</span>` : "";
+        return `<button class="explmv" data-san="${CMT.escapeHtml(m.san)}"><b>${CMT.escapeHtml(m.san)}</b>${meta}</button>`;
+      }).join(" ")
+    : '<span class="hint">End of the course\'s lines.</span>';
+
+  const offBook = (stats ? stats.played : []).filter((p) => !p.inCourse);
+  const playedRows = (stats ? stats.played : []).map((p) => `
+    <tr><td><b>${CMT.escapeHtml(p.san)}</b> ${p.inCourse ? '<span class="pill Book">line</span>' : '<span class="pill OffBook">off</span>'}</td>
+      <td>${p.gameIds.length}</td>
+      <td>${winCellHtml(p.gameIds)}</td>
+      <td class="rowbtns"><button class="igbtn egbtn" data-uci="${p.uci}">games</button></td></tr>`).join("");
+
+  const crumbs = explState.sans.map((san, i) =>
+    `${i % 2 === 0 ? `<span class="mvno">${i / 2 + 1}.</span>` : ""}<button class="mv crumb" data-i="${i}">${CMT.escapeHtml(san)}</button>`).join(" ");
+
+  interactionVersion++;
+  currentPos = null;
+  boardState.chess = new Chess(fen);
+  boardState.orient = course.color;
+  boardState.sel = null; boardState.best = null; boardState.locked = false;
+  boardState.onMove = (from, to, promo) => {
+    const c2 = new Chess(fen);
+    const mv = c2.move({ from, to, promotion: promo });
+    if (!mv) return;
+    explState.sans.push(mv.san);
+    renderExplorer();
+  };
+
+  $("detail").innerHTML = `
+    <div class="detail-head">
+      <button class="iconbtn backbtn" id="explClose" aria-label="Close explorer">←</button>
+      <div class="expl-headmain">
+        <h2>Line explorer</h2>
+        <select id="explCourse" aria-label="Course">${courses.map((c) =>
+          `<option value="${c.id}" ${c.id === course.id ? "selected" : ""}>${CMT.escapeHtml(c.shortName || c.name)} (${c.color === "w" ? "White" : "Black"})</option>`).join("")}</select>
+      </div>
+    </div>
+    <div class="gv-moves expl-crumbs">${crumbs || '<span class="hint">Start position — click a course move or play on the board.</span>'}
+      ${explState.sans.length ? '<button class="mv" id="explUndo">⌫ undo</button>' : ""}</div>
+    <div class="board-wrap">
+      <div id="board" class="board"></div>
+      <div class="expl-coursemoves"><span class="hint">Course move${node && node.moves.size === 1 ? "" : "s"}:</span> ${courseMoveBtns}</div>
+    </div>
+    <div class="statline expl-stats">
+      ${stats && stats.gameIds.length
+        ? `Reached in <b>${stats.gameIds.length}</b> game${stats.gameIds.length === 1 ? "" : "s"} · score ${winCellHtml(stats.gameIds)}
+           <button class="igbtn" id="explGames">games</button>`
+        : gameIndex && gameIndex.length ? "None of your loaded games reached this position." : "Run an analysis to see your games along the line."}
+    </div>
+    ${stats && stats.userToMove && stats.deviationPct != null ? `
+      <div class="statline ${stats.deviationPct > 0 ? "expl-dev" : ""}">You deviate from the line when playing this position
+        <b>${stats.deviationPct}%</b> of the time (${stats.devTotal} of your moves here${offBook.length ? `, off-book: ${offBook.map((p) => CMT.escapeHtml(p.san)).join(", ")}` : ""}).</div>` : ""}
+    ${playedRows ? `
+    <table class="hist">
+      <thead><tr><th>Played here (${userTurn ? "you" : "them"})</th><th>#</th><th>Win</th><th></th></tr></thead>
+      <tbody>${playedRows}</tbody>
+    </table>` : ""}`;
+
+  renderBoard();
+  $("explClose").addEventListener("click", closeExplorer);
+  $("explCourse").addEventListener("change", (e) => {
+    explState.courseId = e.target.value;
+    explState.sans = [];
+    renderExplorer();
+  });
+  const undo = $("explUndo");
+  if (undo) undo.addEventListener("click", () => { explState.sans.pop(); renderExplorer(); });
+  document.querySelectorAll(".explmv").forEach((b) => b.addEventListener("click", () => {
+    explState.sans.push(b.dataset.san);
+    renderExplorer();
+  }));
+  document.querySelectorAll(".crumb").forEach((b) => b.addEventListener("click", () => {
+    explState.sans = explState.sans.slice(0, +b.dataset.i);
+    renderExplorer();
+  }));
+  const eg = $("explGames");
+  if (eg) eg.addEventListener("click", () => openGamesList({
+    title: "Games reaching this position", gameIds: stats.gameIds, jumpKey: key, back: renderExplorer,
+  }));
+  document.querySelectorAll(".egbtn").forEach((b) => b.addEventListener("click", () => {
+    const p = stats.played.find((x) => x.uci === b.dataset.uci);
+    if (p) openGamesList({ title: `Games with ${p.san} here`, gameIds: p.gameIds, jumpKey: key, back: renderExplorer });
+  }));
+  openTrainer();
 }
 
 // ----------------------------- course manager -----------------------------
@@ -1684,6 +2105,39 @@ function init() {
   $("closeSettings").addEventListener("click", () => setDrawer(false));
   $("drawerScrim").addEventListener("click", () => setDrawer(false));
 
+  // Piece sets (async; board re-renders when ready or changed)
+  Pieces.onChange(() => {
+    miniBoardCache.clear();
+    const sel = $("pieceSet");
+    if (sel) sel.value = Pieces.id() === "classic" ? (localStorage.getItem("cmt-piece-set") || "classic") : Pieces.id();
+    if (!drillState.active) renderList();
+    if ($("board") && boardState.chess) renderBoard();
+  });
+  Pieces.init();
+  $("pieceSet").addEventListener("change", async (e) => {
+    const before = Pieces.id();
+    const got = await Pieces.activate(e.target.value);
+    if (got === "classic" && e.target.value === "cburnett") {
+      onStatus("Couldn't fetch the lichess pieces (offline?). Using classic set for now.");
+    } else if (got === "classic" && e.target.value === "custom") {
+      onStatus("No custom pieces uploaded yet — pick 12 files below.");
+      e.target.value = before;
+    }
+  });
+  $("pieceFiles").addEventListener("change", async (e) => {
+    const files = [...e.target.files];
+    e.target.value = "";
+    if (!files.length) return;
+    try {
+      await Pieces.importCustom(files);
+      $("pieceSet").value = "custom";
+      onStatus("Custom pieces loaded.");
+    } catch (err) { onStatus("Custom pieces: " + err.message); }
+  });
+
+  // Line explorer
+  $("openExplorer").addEventListener("click", openExplorer);
+
   // Mode toggle (persisted; repertoire is the default)
   let savedMode = "rep";
   try { savedMode = localStorage.getItem(MODE_KEY) || "rep"; } catch (e) { /* default */ }
@@ -1728,7 +2182,11 @@ function init() {
   CMT.loadCustomBook().then(() => { renderCustomBook(); return restoreSession(); });
   $("run").addEventListener("click", () => run(null));
   $("heroRun") && $("heroRun").addEventListener("click", () => run(null));
-  $("stop").addEventListener("click", () => { control.stop = true; onStatus("Stopping after current move…"); });
+  $("stop").addEventListener("click", () => {
+    control.stop = true;
+    stopBackgroundGrading();
+    onStatus("Stopping after current move…");
+  });
   $("openDrill").addEventListener("click", openDrillSetup);
   $("cancelDrillSetup").addEventListener("click", closeDrillSetup);
   $("startDrill").addEventListener("click", startDrill);
@@ -1821,10 +2279,13 @@ function init() {
     syncAttemptControls();
     try {
       const data = JSON.parse(await f.text());
-      const { results, rep, summary } = await CMT.applyImport(data, engine);
+      const imported = await CMT.applyImport(data, engine);
+      const { results, rep, summary } = imported;
       if (drillState.active) exitDrillForDataChange();
+      stopBackgroundGrading();
       lastResults = results && results.length ? results : null;
       lastRep = rep || null;
+      setGameIndex(imported.gameIndex || null);
       if (summary.username) $("username").value = summary.username;
       if (data.themes) { Themes.importData(data.themes); renderThemeUI(); }
       if (summary.mode) setMode(summary.mode, { silent: true });

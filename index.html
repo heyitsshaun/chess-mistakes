@@ -61,6 +61,7 @@ try {
     </div>
     <div class="drill-launch">
       <button id="openDrill" class="primary" type="button">Shuffle drill</button>
+      <button id="openExplorer" type="button" title="Browse your course lines and the games that followed them">Line explorer</button>
       <span id="drillEligibleCount" class="drill-eligible-count" aria-live="polite">0 eligible</span>
     </div>
     <section id="drillSetup" class="drill-setup" role="dialog" aria-labelledby="drillSetupTitle" aria-describedby="drillSetupHint" hidden>
@@ -195,6 +196,17 @@ try {
 
   <details>
     <summary>Appearance</summary>
+    <div class="set-grid">
+      <label>Chess pieces<select id="pieceSet">
+        <option value="cburnett">Lichess (cburnett)</option>
+        <option value="classic">Classic (built-in)</option>
+        <option value="custom">Custom</option>
+      </select></label>
+    </div>
+    <div class="btnrow wrap">
+      <label class="filebtn">Upload custom pieces<input id="pieceFiles" type="file" accept=".svg,.png" hidden multiple /></label>
+    </div>
+    <p class="hint">Custom pieces: select 12 SVG/PNG files named wK, wQ, wR, wB, wN, wP, bK, bQ, bR, bB, bN, bP (e.g. wK.svg).</p>
     <label class="chip check wide"><input type="checkbox" id="useSystem" checked /><span>Use system light/dark setting</span></label>
     <div class="set-grid">
       <label>Light theme<select id="lightTheme"></select></label>
@@ -232,6 +244,7 @@ try {
 <script src="courses-data.js"></script>
 <script src="core.js"></script>
 <script src="themes.js"></script>
+<script src="pieces.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
