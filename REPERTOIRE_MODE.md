@@ -40,12 +40,31 @@ The status line after a run reports all four counts.
   after their off-book move, your graded replies over the window (click a row
   to load that later position), and lets you retry against the engine.
 
+## Extras
+
+- **Intentional deviations**: on an "I deviated" panel, mark a move as
+  *intentional* — moves you play on purpose stop counting against you (same
+  mechanism as manual ignores; persists, exports, reversible).
+- **Explore button**: any deviation panel deep-links into the line explorer
+  at that exact position (for opponent deviations, including their off-book
+  move) so you can see the surrounding tree and games.
+- **Study labels**: panels show which Chessly chapter/study covers the
+  position, with a link to the course.
+- **Summary strip** above the list: games, % in book, deviation counts,
+  overall score, and your single worst leak.
+- **Course filter** beside the deviation filter narrows the list to one course.
+- **Drill these**: an opponent-deviation panel can spin up a mini-drill of
+  just your replies to that deviation.
+
 ## Drills
 
 Shuffle drill pools both kinds: your deviations (answer = any course move at
 that position, checked instantly) and flagged post-deviation replies (answer
 = engine best, graded live). The same min-occurrences / mistake-rate / round
-size / no-repeat mechanics apply.
+size / no-repeat mechanics apply. Outcomes persist across sessions:
+**focus weak spots first** leads each round with positions you failed or
+haven't drilled, and the round summary lists your misses with jump-to-review
+buttons.
 
 ## Managing courses
 

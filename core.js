@@ -926,7 +926,9 @@
     extra = extra || {};
     const evals = await storage.entries("evals");
     const themes = await storage.get("sessions", "themes"); // saved by the UI layer
+    const drillHistory = await storage.get("sessions", "drillHistory");
     return {
+      drillHistory: drillHistory || null,
       formatVersion: EXPORT_FORMAT_VERSION,
       savedAt: new Date().toISOString(),
       username, settings, results,
@@ -968,6 +970,10 @@
     if (data.themes && typeof data.themes === "object") {
       await storage.set("sessions", "themes", data.themes);
       summary.themes = true; // UI layer re-reads and applies after import
+    }
+    if (data.drillHistory && typeof data.drillHistory === "object") {
+      await storage.set("sessions", "drillHistory", data.drillHistory);
+      summary.drillHistory = true;
     }
     await storage.set("sessions", "last", {
       savedAt: data.savedAt || new Date().toISOString(),

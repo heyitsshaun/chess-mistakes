@@ -2519,6 +2519,7 @@ function init() {
       if (summary.username) $("username").value = summary.username;
       if (data.themes) { Themes.importData(data.themes); renderThemeUI(); }
       if (summary.mode) setMode(summary.mode, { silent: true });
+      if (summary.drillHistory) CMT.storage.get("sessions", "drillHistory").then((h) => { if (h) drillHistory = h; });
       $("exportBtn").disabled = false;
       renderCustomBook();
       renderCourses();

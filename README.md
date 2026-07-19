@@ -61,6 +61,9 @@ position see the course's continuations, which games of yours reached it,
 your score there, every move actually played there (in-line vs off-book), and
 — when it's your move — *"you deviate from the line when playing this
 position X% of the time"*. Any games list clicks through to the viewer.
+Keyboard: ←/→ step the game viewer, ← backs up the explorer, Esc goes up a
+level. Copy-FEN / copy-line buttons at the bottom; every deviation panel has
+an **Explore** button that deep-links here.
 
 ### Background engine grading
 
