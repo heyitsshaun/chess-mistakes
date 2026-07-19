@@ -1403,6 +1403,11 @@
     if (!rep) return;
     customSet = customSet || new Set();
     for (const r of rep.userDev) {
+      // Deviations the user marked as intentional (custom-ignored) don't count.
+      let bad = 0;
+      for (const p of r.plays) if (!customSet.has(r.key + "|" + p.uci)) bad += p.count;
+      r.badCount = bad;
+      r.badShare = r.total ? bad / r.total : 0;
       r.flagged = r.total >= s.minOcc && r.badShare >= s.flagShare && r.badCount > 0;
     }
     for (const g of rep.oppDev) {

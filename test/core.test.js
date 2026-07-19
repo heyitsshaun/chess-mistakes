@@ -754,6 +754,19 @@ function fakeEngine(cpTable, bestTable) {
     assert.strictEqual(active[0].name, "override");
   });
 
+  await atest("user-dev deviations marked intentional stop counting", async () => {
+    CMT.courseManager.bundled = [WCOURSE];
+    CMT.courseManager.imported = [];
+    CMT.courseManager.removedIds = [];
+    const rep = await CMT.runRepertoireAnalysis([mkGame(["d4", "d5", "Nf3"])], SETTINGS, {});
+    CMT.recomputeRepertoireFlags(rep, SETTINGS);
+    assert.strictEqual(rep.userDev[0].flagged, true);
+    const key = rep.userDev[0].key;
+    CMT.recomputeRepertoireFlags(rep, SETTINGS, new Set([key + "|g1f3"]));
+    assert.strictEqual(rep.userDev[0].badCount, 0);
+    assert.strictEqual(rep.userDev[0].flagged, false);
+  });
+
   test("pathToPosition finds a course path to a deep position", () => {
     const rep = CMT.buildRepertoire([WCOURSE], "w");
     const c = new (require("chess.js").Chess)();

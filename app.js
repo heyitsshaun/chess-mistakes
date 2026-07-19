@@ -183,14 +183,18 @@ async function run(games) {
   }
 }
 
+let cleanIndexCache = null;
 function saveCurrentSession() {
-  // Strip the game viewer's replay caches (_fens/_sans) before persisting.
-  const cleanIndex = (gameIndex || []).map((g) => {
-    const { _fens, _sans, ...rest } = g;
-    return rest;
-  });
+  // Strip the game viewer's replay caches (_fens/_sans) before persisting;
+  // cached because background grading saves periodically.
+  if (!cleanIndexCache) {
+    cleanIndexCache = (gameIndex || []).map((g) => {
+      const { _fens, _sans, ...rest } = g;
+      return rest;
+    });
+  }
   CMT.saveSession($("username").value.trim(), lastResults || [], {
-    rep: lastRep, mode: appMode, gameIndex: cleanIndex,
+    rep: lastRep, mode: appMode, gameIndex: cleanIndexCache,
   });
 }
 
@@ -198,6 +202,7 @@ function setGameIndex(gi) {
   gameIndex = gi || null;
   gameById = new Map((gi || []).map((g) => [g.id, g]));
   posIndexCache = null;
+  cleanIndexCache = null;
 }
 
 function getPosIndex() {
@@ -1505,11 +1510,14 @@ function showAnswerFor(r) {
 function selectUserDev(r, cardEl) {
   activateCard(cardEl);
   setupBoardFor(r);
-  const histRows = r.plays.map((p) => `
-    <tr><td><b>${CMT.escapeHtml(p.san)}</b></td><td>${p.count}</td>
+  const histRows = r.plays.map((p) => {
+    const ig = CMT.customBook.set.has(r.key + "|" + p.uci);
+    return `<tr><td><b>${CMT.escapeHtml(p.san)}</b></td><td>${p.count}</td>
     <td>${winCellHtml(p.gameIds)}</td>
-    <td><span class="pill OffBook">Off-book</span></td>
-    <td class="rowbtns"><button class="igbtn gbtn" data-uci="${p.uci}">games</button></td></tr>`).join("");
+    <td>${ig ? '<span class="pill Ignored">Intentional</span>' : '<span class="pill OffBook">Off-book</span>'}</td>
+    <td class="rowbtns"><button class="igbtn gbtn" data-uci="${p.uci}">games</button>
+      <button class="igbtn devig" data-uci="${p.uci}" data-san="${CMT.escapeHtml(p.san)}" title="Intentional deviations don't count against you">${ig ? "unmark" : "intentional"}</button></td></tr>`;
+  }).join("");
   const idx = currentList.indexOf(r);
   const hasNext = idx >= 0 && idx < currentList.length - 1;
   $("detail").innerHTML = `
@@ -1541,6 +1549,12 @@ function selectUserDev(r, cardEl) {
   countUp($("badPct"), Math.round(r.badShare * 100), "%");
   wireDetailCommon(r);
   wireGamesButtons(r, () => selectUserDev(r, cardEl));
+  document.querySelectorAll(".devig").forEach((b) => b.addEventListener("click", () => {
+    CMT.toggleManualIgnore(r, b.dataset.uci, b.dataset.san);
+    renderCustomBook();
+    renderList();
+    selectUserDev(r, cardEl);
+  }));
   openTrainer();
 }
 
