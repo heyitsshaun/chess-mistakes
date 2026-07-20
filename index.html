@@ -48,6 +48,7 @@ try {
         <option value="all">All deviations</option>
         <option value="user">I deviated</option>
         <option value="opp">Opponent deviated</option>
+        <option value="offline">Outside lines</option>
       </select>
       <select id="courseFilter" aria-label="Course filter" class="rep-only">
         <option value="all">All courses</option>
@@ -181,6 +182,7 @@ try {
     <p class="hint">The courses your games are compared against in Repertoire mode. Courses crawled from Chessly ship with the app; add more by importing a crawl file or pasting lines.</p>
     <div class="set-grid">
       <label>Moves analyzed after opponent deviates<input id="windowSize" type="number" value="5" min="1" max="15" /></label>
+      <label title="The “Outside lines” view tracks positions not covered by any course, up to this move number">Track positions outside lines up to move<input id="offMaxMove" type="number" value="20" min="4" max="60" /></label>
     </div>
     <div id="courseList" class="customlist"></div>
     <div class="btnrow wrap">

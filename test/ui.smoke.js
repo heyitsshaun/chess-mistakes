@@ -139,6 +139,19 @@ function check(name, fn) {
     H.renderList();
   });
 
+  check("outside-lines filter renders off-line cards with grades", () => {
+    assert.strictEqual(rep.offLine.length, 1); // the position after their Qh5
+    doc.getElementById("devFilter").value = "offline";
+    H.renderList();
+    const cards = doc.querySelectorAll("#results .card");
+    assert.strictEqual(cards.length, 1);
+    const text = doc.getElementById("results").textContent;
+    assert.ok(text.includes("Outside lines"), "off-line pill missing");
+    assert.ok(text.includes("best"), "engine best missing from graded card");
+    doc.getElementById("devFilter").value = "all";
+    H.renderList();
+  });
+
   check("user-dev detail panel renders and accepts course-move retry", () => {
     const card = doc.querySelectorAll("#results .card")[0];
     card.click();

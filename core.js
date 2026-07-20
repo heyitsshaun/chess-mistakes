@@ -46,6 +46,13 @@
  *     course prepared for), count (games), positions[] = your next
  *     `windowSize` moves engine-graded, each Position-shaped with
  *     kind:'opp-window' and answerUcis=[engine best].
+ *   offLine[]  — positions outside EVERY course line (after any kind of
+ *     departure — yours, theirs, or the course running out — excluding
+ *     transpositions back into a course), aggregated across games up to
+ *     move `offMaxMove` (default 20). Position-shaped, kind:'off-line',
+ *     engine-graded lazily; answerUcis=[engine best] once graded.
+ *   user-dev positions are also engine-graded lazily (best/bestEval/play
+ *     levels), purely informational — the course stays the drill answer.
  */
 "use strict";
 
@@ -1349,7 +1356,11 @@
       if (turn === userColor) {
         return Object.assign({
           type: "user-dev", posKey: key, fen: fenBefore, moveNo,
-          played: { uci, san: mv.san }, expected, courseIds, plies: i,
+          played: {
+            uci, san: mv.san, fenAfter: chess.fen(),
+            terminalAfter: chess.game_over(), matedAfter: chess.in_checkmate(),
+          },
+          expected, courseIds, plies: i,
           gameId: opts.gameId || null,
         }, base);
       }
@@ -1382,9 +1393,26 @@
     return Object.assign({ type: "book-end", plies: sans.length }, base);
   }
 
+  // User moves made in positions OUTSIDE every course line for their color —
+  // everything after the game has left the tree (your deviation, theirs, or
+  // the course simply running out). Positions that transpose back into a
+  // course don't count. Capped at `offMaxMove` full moves so engine work and
+  // position grouping stay meaningful.
+  function extractOffLineMoves(game, username, repByColor, opts) {
+    opts = opts || {};
+    const maxMove = Math.max(1, opts.offMaxMove || 20);
+    const out = [];
+    for (const m of extractUserMoves(game, username, maxMove, opts.gameId)) {
+      const rep = repByColor[m.color];
+      if (!rep || !rep.size) break; // no courses for this color → nothing is "off-line"
+      if (!rep.get(posKey(m.fenBefore))) out.push(m);
+    }
+    return out;
+  }
+
   // Classify all games against the active courses and aggregate — NO engine.
-  // Window positions are built ungraded (level null); gradeRepWindows fills
-  // them in later (background or on demand).
+  // Window, user-dev and off-line positions are built ungraded (level null);
+  // gradeRepertoire fills them in later (background or on demand).
   function classifyRepertoire(games, s) {
     const courses = activeCourses();
     if (!courses.length) throw new Error("No courses loaded. Add one under Settings → Repertoire courses.");
@@ -1394,11 +1422,15 @@
     const counts = { games: games.length, userDev: 0, oppDev: 0, bookEnd: 0, unmatched: 0 };
     const passCounts = new Map();
     const classified = [];
+    const offMoves = [];
     for (let gi = 0; gi < games.length; gi++) {
       const c = classifyGame(games[gi], s.username, repByColor, { windowSize: s.windowSize, gameId: "g" + gi });
       classified.push(c);
       counts[{ "user-dev": "userDev", "opp-dev": "oppDev", "book-end": "bookEnd", unmatched: "unmatched" }[c.type]]++;
       for (const p of c.passThroughs) passCounts.set(p.key, (passCounts.get(p.key) || 0) + 1);
+      if (c.type !== "unmatched") {
+        for (const m of extractOffLineMoves(games[gi], s.username, repByColor, { offMaxMove: s.offMaxMove, gameId: "g" + gi })) offMoves.push(m);
+      }
     }
 
     // ---- aggregate: I deviated first ----
@@ -1415,7 +1447,14 @@
         userDevMap.set(c.posKey, r);
       }
       let p = r.plays.get(c.played.uci);
-      if (!p) { p = { uci: c.played.uci, san: c.played.san, count: 0, gameIds: [] }; r.plays.set(c.played.uci, p); }
+      if (!p) {
+        p = {
+          uci: c.played.uci, san: c.played.san, count: 0, cplSum: 0, level: null,
+          gameIds: [], fenAfter: c.played.fenAfter || null,
+          terminalAfter: !!c.played.terminalAfter, matedAfter: !!c.played.matedAfter,
+        };
+        r.plays.set(c.played.uci, p);
+      }
       p.count++;
       if (c.gameId) p.gameIds.push(c.gameId);
       r.devCount++;
@@ -1432,6 +1471,7 @@
         plays: [...r.plays.values()].sort((a, b) => b.count - a.count),
         total, badCount: r.devCount, badShare: total ? r.devCount / total : 0,
         avgCpl: 0, url: r.url, flagged: false,
+        best: null, bestEval: null, graded: false,
       };
     });
 
@@ -1501,7 +1541,42 @@
       };
     });
 
-    return { userDev, oppDev, counts, savedAt: new Date().toISOString() };
+    // ---- aggregate: positions outside every line (ungraded) ----
+    const offMap = new Map();
+    for (const m of offMoves) {
+      const key = posKey(m.fenBefore);
+      let p = offMap.get(key);
+      if (!p) {
+        p = {
+          kind: "off-line", key, fen: m.fenBefore, moveNo: m.moveNo, color: m.color,
+          opening: m.opening, best: null, bestEval: null,
+          plays: new Map(), total: 0, url: m.url, graded: false,
+        };
+        offMap.set(key, p);
+      }
+      let rec = p.plays.get(m.uci);
+      if (!rec) {
+        rec = {
+          uci: m.uci, san: m.san, count: 0, cplSum: 0, level: null,
+          gameIds: [], fenAfter: m.fenAfter,
+          terminalAfter: m.terminalAfter, matedAfter: m.matedAfter,
+        };
+        p.plays.set(m.uci, rec);
+      }
+      rec.count++;
+      if (m.gameId) rec.gameIds.push(m.gameId);
+      p.total++;
+    }
+    const offLine = [...offMap.values()].map((p) => {
+      const ph = phaseOf(p.moveNo, s.phases);
+      return Object.assign(p, {
+        phase: ph.name, accept: ph.accept,
+        plays: [...p.plays.values()].sort((a, b) => b.count - a.count),
+        badCount: 0, badShare: 0, avgCpl: 0, flagged: false, answerUcis: [],
+      });
+    }).sort((a, b) => b.total - a.total || a.moveNo - b.moveNo);
+
+    return { userDev, oppDev, offLine, counts, savedAt: new Date().toISOString() };
   }
 
   function repWindowPositions(rep) {
@@ -1510,7 +1585,7 @@
     return out;
   }
 
-  // Engine-grade every window position (the only engine use in this mode).
+  // Engine-grade every window position.
   // deps: { engine, onStatus?, onProgress?, onPosition?, control? }
   async function gradeRepWindows(rep, s, deps) {
     const todo = repWindowPositions(rep).filter((p) => !p.graded);
@@ -1519,16 +1594,41 @@
     for (const p of todo) if (p.graded) p.answerUcis = p.best ? [p.best] : [];
   }
 
-  // Back-compat one-shot: classify then grade all windows.
+  // Every engine-gradable repertoire position still lacking its grade:
+  // opponent-deviation windows first (they feed drills), then your own
+  // deviations, then off-line positions (already frequency-sorted).
+  function repUngradedPositions(rep) {
+    if (!rep) return [];
+    return repWindowPositions(rep)
+      .concat(rep.userDev || [], rep.offLine || [])
+      .filter((p) => !p.graded);
+  }
+
+  // Engine-grade everything gradable in one pass. The UI instead pulls
+  // repUngradedPositions() one at a time so grading never blocks rendering.
+  // Engine best becomes the drill answer for windows and off-line positions;
+  // user-dev keeps the course moves as its answer (grades are informational).
+  async function gradeRepertoire(rep, s, deps) {
+    const todo = repUngradedPositions(rep);
+    if (!todo.length) return;
+    await gradePositions(todo, s, deps);
+    for (const p of todo) {
+      if (p.graded && (p.kind === "opp-window" || p.kind === "off-line")) {
+        p.answerUcis = p.best ? [p.best] : [];
+      }
+    }
+  }
+
+  // Back-compat one-shot: classify then grade everything.
   async function runRepertoireAnalysis(games, s, deps) {
     deps = deps || {};
     const rep = classifyRepertoire(games, s);
     const c = rep.counts;
     (deps.onStatus || noop)(`${c.games} games: ${c.userDev} you deviated, ${c.oppDev} opponent deviated, ` +
       `${c.bookEnd} in-book, ${c.unmatched} unmatched.`);
-    if (deps.getEngine && repWindowPositions(rep).some((p) => !p.graded)) {
+    if (deps.getEngine && repUngradedPositions(rep).length) {
       const engine = await deps.getEngine();
-      await gradeRepWindows(rep, s, Object.assign({}, deps, { engine }));
+      await gradeRepertoire(rep, s, Object.assign({}, deps, { engine }));
     }
     return rep;
   }
@@ -1568,12 +1668,30 @@
       g.avgCpl = groupTotal ? groupCpl / groupTotal : 0;
       g.flagged = g.count >= s.minOcc && groupBad > 0;
     }
+    for (const p of rep.offLine || []) {
+      const ph = phaseOf(p.moveNo, s.phases);
+      p.accept = ph.accept; p.phase = ph.name;
+      let bad = 0, cplSum = 0;
+      for (const q of p.plays) {
+        cplSum += q.cplSum || 0;
+        if (q.level != null && q.level > ph.accept && !customSet.has(p.key + "|" + q.uci)) bad += q.count;
+      }
+      p.badCount = bad;
+      p.badShare = p.total ? bad / p.total : 0;
+      p.avgCpl = p.total ? cplSum / p.total : 0;
+      // Off-line is a frequency view ("my most common positions outside any
+      // line"), so it flags on occurrences alone; move quality shows on the
+      // card once graded, and drills still filter by mistake share.
+      p.flagged = p.total >= s.minOcc;
+    }
   }
 
   // Flatten repertoire results into one sortable card list for the UI.
-  // filter: 'all' | 'user' | 'opp'
+  // filter: 'all' | 'user' | 'opp' | 'offline'. Off-line positions are their
+  // own view — they aren't deviations, so 'all' (deviations) excludes them.
   function repertoireItems(rep, filter) {
     if (!rep) return [];
+    if (filter === "offline") return (rep.offLine || []).slice();
     let items = [];
     if (filter !== "opp") items = items.concat(rep.userDev);
     if (filter !== "user") items = items.concat(rep.oppDev);
@@ -1581,16 +1699,18 @@
   }
 
   // Drill pool for repertoire mode: user-dev positions (answer = any course
-  // move) plus graded window positions where you erred (answer = engine best).
+  // move) plus graded window and off-line positions where you erred (answer =
+  // engine best). Deduped by key — a position can appear both in a window and
+  // off-line, with the same engine answer.
   function repertoireDrillPool(rep, options) {
     if (!rep) return [];
     options = options || {};
-    const include = options.include || "all"; // 'all' | 'user' | 'opp'
+    const include = options.include || "all"; // 'all' | 'user' | 'opp' | 'offline'
     let pool = [];
-    if (include !== "opp") {
+    if (include === "all" || include === "user") {
       pool = pool.concat(filterDrillPositions(rep.userDev, options).filter((r) => r.flagged));
     }
-    if (include !== "user") {
+    if (include === "all" || include === "opp") {
       const minShare = clamp(Number(options.minMistakeShare) || 0, 0, 1);
       for (const g of rep.oppDev) {
         if (g.count < Math.max(1, Math.ceil(options.minOccurrences || 1))) continue;
@@ -1598,7 +1718,12 @@
           p.flagged && p.best && p.badShare >= minShare && p.moveNo > (options.skipFirst || 0)));
       }
     }
-    return pool;
+    if (include === "all" || include === "offline") {
+      pool = pool.concat(filterDrillPositions(rep.offLine || [], options)
+        .filter((p) => p.graded && p.best));
+    }
+    const seen = new Set();
+    return pool.filter((p) => (seen.has(p.key) ? false : (seen.add(p.key), true)));
   }
 
   // ------------------------------ line explorer ------------------------------
@@ -1683,6 +1808,11 @@
       g.positions = g.positions.filter((p) => p && p.fen && Array.isArray(p.plays));
       for (const p of g.positions) { p.key = posKey(p.fen); p.groupKey = g.key; }
     }
+    // offLine arrived after v2 exports; older saves simply don't have it.
+    rep.offLine = Array.isArray(rep.offLine)
+      ? rep.offLine.filter((p) => p && p.fen && Array.isArray(p.plays))
+      : [];
+    for (const p of rep.offLine) p.key = posKey(p.fen);
     return rep;
   }
 
@@ -1711,6 +1841,7 @@
     courseManager, setBundledCourses, activeCourses, loadCourses, removeCourse,
     restoreRemovedCourses, courseFromChesslyRaw, courseFromLines, importCourse,
     buildRepertoire, classifyGame, classifyRepertoire, gradeRepWindows,
+    gradeRepertoire, repUngradedPositions, extractOffLineMoves,
     repWindowPositions, runRepertoireAnalysis, recomputeRepertoireFlags,
     repertoireItems, repertoireDrillPool, normalizeRepResults,
     // sessions / backup

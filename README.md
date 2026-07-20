@@ -33,10 +33,16 @@ Repertoire courses**. See `REPERTOIRE_MODE.md` for the full guide and
    leaves the tree:
    - **I deviated** cards: the position where you went off-book, what the course
      plays, what you played instead, and how often (correct pass-throughs count in
-     the denominator). No engine involved — the course is the answer key.
+     the denominator). The course stays the answer key; each deviating move is
+     also engine-graded in the background for quality (grade, avg cp loss, and
+     the engine's preference).
    - **They deviated** cards: identical opponent deviations are grouped; your next
      ~5 moves (configurable) are graded with Stockfish, so you can see whether their
      "random" sidestep provokes the same bad reply from you every time.
+   - **Outside lines** (its own filter): your most common positions not covered by
+     any course — everything after a game leaves the tree, sorted by frequency,
+     with win % and (as grading arrives) the engine's rating of what you played
+     there. Tracked up to a configurable move number (default 20).
    - Games that stay inside the course to the end of its lines count as in-book.
 3. Filter the list with **All / I deviated / Opponent deviated**; click a card to
    retry the position on the board (course move or engine-best as the answer).
@@ -100,7 +106,10 @@ and is included in backups.
 Results render the moment games are loaded (counts and win % need no engine).
 Stockfish grades fill in progressively in the background — opening a position
 bumps it to the front of the queue — and everything re-renders as grades
-arrive. Stop halts the background pass; it resumes on the next run/reload.
+arrive. In repertoire mode the queue covers opponent-deviation replies first,
+then your own deviating moves, then off-line positions by frequency; none of
+it gates rendering, filtering, favorites, or drills on already-graded
+positions. Stop halts the background pass; it resumes on the next run/reload.
 
 ## Engine mode (legacy)
 

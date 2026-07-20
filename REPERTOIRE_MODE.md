@@ -15,7 +15,11 @@ color you played, until the first departure from the tree:
   counts), and your off-book rate at that position. Games where you played the
   course move through the same position count toward the denominator, so a
   card reading "off-book 40% of 5 visits" means you got it right 3 times.
-  No engine is involved; the course is the answer key.
+  The course is the answer key for flagging and drills; on top of that, each
+  deviating move is engine-graded in the background — the card and the
+  "what you played instead" table pick up a grade, avg cp loss, and the
+  engine's preferred move as the pass reaches them. Grading never blocks
+  anything: cards render instantly and fill in.
 - **They deviated** — your opponent left the course first. Identical
   deviations (same resulting position) are grouped across games, because
   opponents often break your prep in the same way and you may have grooved a
@@ -26,11 +30,25 @@ color you played, until the first departure from the tree:
 - **In book** — the game stayed inside the course until its lines ran out.
 - **Unmatched** — you had no course for that color, or the game wasn't yours.
 
-The status line after a run reports all four counts.
+On top of the per-game classification, every run also collects **Outside
+lines**: your most common positions not covered by any course — everything
+after a game leaves the tree (your deviation, theirs, or the course simply
+running out), excluding positions that transpose back into a course.
+Aggregated across games up to a configurable move number (Settings →
+Repertoire courses → "Track positions outside lines up to move", default 20)
+and sorted by frequency, each card shows how often you reach the position,
+your score there, and — once the background engine pass gets to it — the
+grade of what you played plus the engine's best move. It's the "what happens
+once I'm out of prep" view: pick the **Outside lines** filter to see it.
+
+The status line after a run reports all the counts.
 
 ## Reading the list
 
-- Filter chips: **All deviations / I deviated / Opponent deviated**.
+- Filter chips: **All deviations / I deviated / Opponent deviated /
+  Outside lines** (the last is its own view — off-line positions aren't
+  deviations, so "All deviations" doesn't include them; they flag on
+  frequency alone, so `min times seen` is the lever there).
 - "Show all" reveals cards below the flag thresholds (min times seen, flag
   share — same settings as Engine mode, applied instantly).
 - ⚠ *multi* on a card: the position exists in more than one of your courses;
@@ -58,9 +76,11 @@ The status line after a run reports all four counts.
 
 ## Drills
 
-Shuffle drill pools both kinds: your deviations (answer = any course move at
-that position, checked instantly) and flagged post-deviation replies (answer
-= engine best, graded live). The same min-occurrences / mistake-rate / round
+Shuffle drill pools all three kinds: your deviations (answer = any course
+move at that position, checked instantly), flagged post-deviation replies,
+and off-line positions where you erred (both: answer = engine best, graded
+live). With the **Outside lines** filter active, the drill draws from just
+those positions. The same min-occurrences / mistake-rate / round
 size / no-repeat mechanics apply. Outcomes persist across sessions:
 **focus weak spots first** leads each round with positions you failed or
 haven't drilled, and the round summary lists your misses with jump-to-review

@@ -708,6 +708,84 @@ function fakeEngine(cpTable, bestTable) {
     assert.strictEqual(pool[0].kind, "opp-window");
   });
 
+  test("classifyRepertoire aggregates positions outside every line", () => {
+    CMT.courseManager.bundled = [WCOURSE, WCOURSE2];
+    CMT.courseManager.imported = [];
+    CMT.courseManager.removedIds = [];
+    const games = [
+      mkGame(["d4", "e5", "dxe5", "Nc6", "Nf3"]),  // opp-dev: dxe5 + Nf3 positions are off-line
+      mkGame(["d4", "e5", "dxe5", "Nc6", "Nf3"]),  // same again → grouped
+      mkGame(["d4", "d5", "Bf4", "Nf6", "e3"]),    // clean pass-through → nothing off-line
+      mkGame(["e4"], { white: "a", black: "b" }),  // unmatched → ignored entirely
+    ];
+    const s = Object.assign({}, SETTINGS, { windowSize: 2, offMaxMove: 20 });
+    const rep = CMT.classifyRepertoire(games, s);
+    assert.strictEqual(rep.offLine.length, 2); // position after 1...e5 and after 2...Nc6
+    for (const p of rep.offLine) {
+      assert.strictEqual(p.kind, "off-line");
+      assert.strictEqual(p.total, 2);
+      assert.strictEqual(p.graded, false);
+      assert.strictEqual(p.plays.length, 1);
+      assert.strictEqual(p.plays[0].gameIds.length, 2);
+      assert.ok(p.plays[0].fenAfter); // gradable later
+    }
+    assert.deepStrictEqual(rep.offLine.map((p) => p.plays[0].san).sort(), ["Nf3", "dxe5"]);
+    // in-tree positions (e.g. the start position, or after 1.d4 d5) never appear
+    const startKey = CMT.posKey("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    assert.ok(!rep.offLine.some((p) => p.key === startKey));
+    // items filter + frequency-based flagging
+    CMT.recomputeRepertoireFlags(rep, s);
+    assert.ok(rep.offLine.every((p) => p.flagged)); // total 2 ≥ minOcc 1, even ungraded
+    assert.strictEqual(CMT.repertoireItems(rep, "offline").length, 2);
+    assert.strictEqual(CMT.repertoireItems(rep, "all").length, 1); // opp-dev only; off-line is its own view
+    // offMaxMove caps collection
+    const short = CMT.classifyRepertoire(games, Object.assign({}, s, { offMaxMove: 2 }));
+    assert.strictEqual(short.offLine.length, 1); // only the move-2 position (dxe5)
+  });
+
+  await atest("gradeRepertoire grades your deviations and off-line positions non-destructively", async () => {
+    CMT.courseManager.bundled = [WCOURSE];
+    CMT.courseManager.imported = [];
+    CMT.courseManager.removedIds = [];
+    // I deviate with 2.Nf3 (course: Bf4); later 3.c4 happens outside the tree.
+    const games = [mkGame(["d4", "d5", "Nf3", "e6", "c4"])];
+    const cpTable = {};
+    cpTable[fenAfter(["d4", "d5"])] = 200;               // best from here is +2
+    cpTable[fenAfter(["d4", "d5", "Nf3"])] = 50;         // after Nf3 opp is +0.5 → cpl 250
+    cpTable[fenAfter(["d4", "d5", "Nf3", "e6"])] = 300;  // best from here is +3
+    cpTable[fenAfter(["d4", "d5", "Nf3", "e6", "c4"])] = 0; // after c4 → cpl 300
+    const best = {};
+    best[fenAfter(["d4", "d5"])] = "e2e4"; // engine best ≠ course move, to prove no clobber
+    const eng = fakeEngine(cpTable, best);
+    const s = Object.assign({}, SETTINGS, { windowSize: 2, offMaxMove: 20 });
+    const rep = await CMT.runRepertoireAnalysis(games, s, { getEngine: async () => eng });
+    // user-dev: graded, informational only — course moves stay the answer
+    const ud = rep.userDev[0];
+    assert.strictEqual(ud.graded, true);
+    assert.strictEqual(ud.best, "e2e4");
+    assert.strictEqual(ud.plays[0].level, 5); // 250cp lost → blunder
+    assert.deepStrictEqual(ud.answerUcis, ["c1f4"]); // still the course move
+    // off-line: graded, engine best becomes the drill answer
+    assert.strictEqual(rep.offLine.length, 1);
+    const ol = rep.offLine[0];
+    assert.strictEqual(ol.graded, true);
+    assert.strictEqual(ol.plays[0].level, 5); // 300cp lost
+    assert.deepStrictEqual(ol.answerUcis, ["a2a3"]); // fake engine default best
+    // flags + drill pool: the off-line blunder is drillable on its own
+    CMT.recomputeRepertoireFlags(rep, s);
+    assert.strictEqual(ol.badCount, 1);
+    const pool = CMT.repertoireDrillPool(rep, { include: "offline" });
+    assert.strictEqual(pool.length, 1);
+    assert.strictEqual(pool[0].kind, "off-line");
+    // nothing ungraded left
+    assert.strictEqual(CMT.repUngradedPositions(rep).length, 0);
+  });
+
+  test("normalizeRepResults tolerates saves that predate offLine", () => {
+    const rep = CMT.normalizeRepResults({ userDev: [], oppDev: [] });
+    assert.deepStrictEqual(rep.offLine, []);
+  });
+
   test("courseFromChesslyRaw converts fens to posKeys and derives uci", () => {
     const raw = {
       course: { id: "cid", name: "Test Course", url: "" },

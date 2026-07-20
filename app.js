@@ -77,6 +77,7 @@ function readSettings() {
     minOcc: Math.max(1, +$("minOcc").value),
     bookMax: +$("bookMax").value,
     windowSize: CMT.clamp(+$("windowSize").value || 5, 1, 15),
+    offMaxMove: CMT.clamp(+$("offMaxMove").value || 20, 4, 60),
   };
 }
 
@@ -163,7 +164,8 @@ async function run(games) {
       lastRep = CMT.classifyRepertoire(games, s);
       const c = lastRep.counts;
       onStatus(`${c.games} games: you deviated first in ${c.userDev}, opponents in ${c.oppDev}; `
-        + `${c.bookEnd} stayed in book, ${c.unmatched} unmatched.`);
+        + `${c.bookEnd} stayed in book, ${c.unmatched} unmatched`
+        + (lastRep.offLine.length ? `; ${lastRep.offLine.length} positions outside lines.` : "."));
     } else {
       lastResults = CMT.aggregatePositions(games, s);
       onStatus(`${games.length} games → ${lastResults.length} unique positions. Grading in background…`);
@@ -218,7 +220,9 @@ function getPosIndex() {
 // ----------------------------- background grading -----------------------------
 function ungradedQueue() {
   if (appMode === "rep") {
-    return lastRep ? CMT.repWindowPositions(lastRep).filter((p) => !p.graded) : [];
+    // Windows first (they feed drills), then your deviations, then off-line
+    // positions by frequency — all filled in without blocking anything.
+    return lastRep ? CMT.repUngradedPositions(lastRep) : [];
   }
   if (!lastResults) return [];
   return CMT.sortResults(lastResults.filter((r) => !r.graded), "occ");
@@ -253,7 +257,9 @@ async function startBackgroundGrading() {
       const r = bg.priority.shift() || ungradedQueue()[0];
       if (!r) break;
       await CMT.gradePositions([r], s, deps);
-      if (r.graded && r.kind === "opp-window") r.answerUcis = r.best ? [r.best] : [];
+      // Engine best is the drill answer for windows and off-line positions;
+      // user-dev keeps its course moves (the grade is informational).
+      if (r.graded && (r.kind === "opp-window" || r.kind === "off-line")) r.answerUcis = r.best ? [r.best] : [];
       graded++;
       if (graded % 10 === 0) saveCurrentSession();
       onProgress(1 - ungradedQueue().length / Math.max(1, graded + ungradedQueue().length));
@@ -272,8 +278,9 @@ async function startBackgroundGrading() {
 function onBgDone() {
   onProgress(1);
   if (appMode === "rep" && lastRep) {
-    if (!ungradedQueue().length && CMT.repWindowPositions(lastRep).length) {
-      onStatus("All post-deviation replies graded.");
+    if (!ungradedQueue().length
+        && (CMT.repWindowPositions(lastRep).length || lastRep.userDev.length || lastRep.offLine.length)) {
+      onStatus("Engine grading complete — deviations, replies, and off-line positions.");
     }
   } else if (appMode === "legacy" && lastResults) {
     onStatus("All " + lastResults.length + " positions graded.");
@@ -493,6 +500,7 @@ function repSummaryHtml() {
     <span><b>${inBookPct}%</b> stayed in book</span>
     <span class="s-user"><b>${c.userDev}</b> you left first</span>
     <span class="s-opp"><b>${c.oppDev}</b> they left first</span>
+    ${(lastRep.offLine || []).length ? `<span><b>${lastRep.offLine.length}</b> spots outside lines</span>` : ""}
     ${overall && overall.n ? `<span>score <b>${overall.pct}%</b></span>` : ""}
     ${topLeak ? `<button class="s-leak" id="summaryLeak" data-key="${topLeak.key}" title="${CMT.escapeHtml(topLeak.opening || "")} — click to open">worst leak: <b>${CMT.escapeHtml(topLeak.plays[0].san)}</b> ×${topLeak.badCount} (move ${topLeak.moveNo})</button>` : ""}
   </div>`;
@@ -546,7 +554,7 @@ function renderRepList() {
   refreshDrillAvailability();
   const el = $("results");
   if (!items.length) {
-    const any = lastRep.userDev.length + lastRep.oppDev.length;
+    const any = lastRep.userDev.length + lastRep.oppDev.length + (lastRep.offLine || []).length;
     el.innerHTML = `<div class="hero"><div class="hero-board" aria-hidden="true"></div>
       <h2>${any ? "Nothing flagged with these filters" : "No deviations found"}</h2>
       <p>${any
@@ -567,9 +575,21 @@ function renderRepList() {
         <div class="thumb">${miniBoardSVG(r.fen, r.color)}</div>
         <div>
           ${courseTag(r)} <span class="meta">Move ${r.moveNo} · ${r.color === "w" ? "White" : "Black"}</span>
-          <div class="line"><span class="pill UserDev">I deviated</span> You played <b>${CMT.escapeHtml(worst.san)}</b> ${worst.count}/${r.total}×</div>
+          <div class="line"><span class="pill UserDev">I deviated</span> You played <b>${CMT.escapeHtml(worst.san)}</b> ${worst.count}/${r.total}×${worst.level != null ? " " + pills(worst.level) : ""}</div>
           <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--mistake)"></span></div>
-          <div class="meta">off-book ${(r.badShare * 100).toFixed(0)}% of ${r.total} visit${r.total === 1 ? "" : "s"} · score ${winCellHtml(positionGameIds(r))} · course: <b>${expectedSans(r)}</b></div>
+          <div class="meta">off-book ${(r.badShare * 100).toFixed(0)}% of ${r.total} visit${r.total === 1 ? "" : "s"} · score ${winCellHtml(positionGameIds(r))}${r.graded ? ` · avg loss ${r.avgCpl.toFixed(0)}cp` : ""} · course: <b>${expectedSans(r)}</b></div>
+        </div>
+        ${favBtnHtml(r.key, "cardfav")}
+        <span class="chev">›</span>`;
+    } else if (r.kind === "off-line") {
+      const worst = r.plays[0];
+      card.innerHTML = `
+        <div class="thumb">${miniBoardSVG(r.fen, r.color)}</div>
+        <div>
+          ${r.opening ? `<span class="opening">${CMT.escapeHtml(r.opening)}</span> ` : ""}<span class="meta">Move ${r.moveNo} · ${r.color === "w" ? "White" : "Black"}</span>
+          <div class="line"><span class="pill OffBook">Outside lines</span> You played <b>${CMT.escapeHtml(worst.san)}</b> ${worst.count}/${r.total}×${worst.level != null ? " " + pills(worst.level, false, CMT.customBook.set.has(r.key + "|" + worst.uci)) : ""}</div>
+          <div class="sevbar"><span style="width:${Math.round(r.badShare * 100)}%;background:var(--inacc)"></span></div>
+          <div class="meta">seen ${r.total}× · score ${winCellHtml(positionGameIds(r))} · ${r.graded ? `avg loss ${r.avgCpl.toFixed(0)}cp · best <b>${CMT.escapeHtml(CMT.uciToSan(r.fen, r.best) || r.best || "?")}</b>` : '<span class="hint">grading…</span>'}</div>
         </div>
         ${favBtnHtml(r.key, "cardfav")}
         <span class="chev">›</span>`;
@@ -688,7 +708,7 @@ function computeDrillPool(config) {
   if (appMode === "rep") {
     if (!lastRep) return [];
     CMT.recomputeRepertoireFlags(lastRep, readSettings(), CMT.customBook.set);
-    const include = { all: "all", user: "user", opp: "opp" }[$("devFilter").value] || "all";
+    const include = { all: "all", user: "user", opp: "opp", offline: "offline" }[$("devFilter").value] || "all";
     pool = CMT.repertoireDrillPool(lastRep, Object.assign({}, config, { include }))
       .filter((r) => r.fen && (r.kind === "user-dev" ? r.answerUcis.length : r.best));
   } else {
@@ -703,7 +723,7 @@ function computeDrillPool(config) {
 
 function hasAnyResults() {
   return appMode === "rep"
-    ? !!lastRep && (lastRep.userDev.length + lastRep.oppDev.length) > 0
+    ? !!lastRep && (lastRep.userDev.length + lastRep.oppDev.length + (lastRep.offLine || []).length) > 0
     : !!lastResults && lastResults.length > 0;
 }
 
@@ -1351,7 +1371,7 @@ function selectPosition(r, cardEl) {
 
 // Ask the background grader to do this position next.
 function requestPriorityGrade(r) {
-  if (!r || r.graded || r.kind === "user-dev") return;
+  if (!r || r.graded) return;
   const targets = r.kind === "opp-dev" ? r.positions.filter((p) => !p.graded) : [r];
   for (const t of targets) if (!bg.priority.includes(t)) bg.priority.unshift(t);
   if (targets.length) startBackgroundGrading();
@@ -1447,7 +1467,8 @@ function selectUserDev(r, cardEl) {
     const ig = CMT.customBook.set.has(r.key + "|" + p.uci);
     return `<tr><td><b>${CMT.escapeHtml(p.san)}</b></td><td>${p.count}</td>
     <td>${winCellHtml(p.gameIds)}</td>
-    <td>${ig ? '<span class="pill Ignored">Intentional</span>' : '<span class="pill OffBook">Off-book</span>'}</td>
+    <td>${ig ? '<span class="pill Ignored">Intentional</span>' : pills(p.level)}</td>
+    <td class="evalnum">${p.level == null ? "…" : (p.cplSum / p.count).toFixed(0) + "cp"}</td>
     <td class="rowbtns"><button class="igbtn gbtn" data-uci="${p.uci}">games</button>
       <button class="igbtn devig" data-uci="${p.uci}" data-san="${CMT.escapeHtml(p.san)}" title="Intentional deviations don't count against you">${ig ? "unmark" : "intentional"}</button></td></tr>`;
   }).join("");
@@ -1474,10 +1495,12 @@ function selectUserDev(r, cardEl) {
         ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener"><button>Game ↗</button></a>` : ""}
       </div>
     </div>
-    <p class="hint">Course continues with <b>${expectedSans(r)}</b>.</p>
+    <p class="hint">Course continues with <b>${expectedSans(r)}</b>.${r.graded && r.best
+      ? ` Engine prefers <b>${CMT.escapeHtml(CMT.uciToSan(r.fen, r.best) || r.best)}</b> (eval ${CMT.fmtEval(r.bestEval)}).`
+      : r.graded ? "" : ' <span class="hint">Engine grades fill in below as the background pass reaches this position.</span>'}</p>
     ${studyLineHtml(r.courseIds, r.key)}
     <table class="hist">
-      <thead><tr><th>What you played instead</th><th>#</th><th>Win</th><th></th><th></th></tr></thead>
+      <thead><tr><th>What you played instead</th><th>#</th><th>Win</th><th>Grade</th><th>Avg loss</th><th></th></tr></thead>
       <tbody>${histRows}</tbody>
     </table>`;
   renderBoard();
